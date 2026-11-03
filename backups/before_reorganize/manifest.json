@@ -1,0 +1,11 @@
+{
+  "/boot.py": "16f5b4bcb120e9a032242b47967e649a0cc577b41939e81ef7d4b4da181bd17f",
+  "/calib.json": "ee3caea7395a576aa92cd31fbecaff214f6079ca396867fa130dced97f58ca4b",
+  "/lib/as7341.py": "5c70082fbea56fcca6244bb34f2f7f12294f6fadc6125dfc2c18084f8e64f24a",
+  "/lib/as7341_led.py": "f2952be3eba4f5019eada28fd14db10690c9668b4480aa6604d11a3ec97d12df",
+  "/lib/as7341_smux_select.py": "93bcf865b75ee96303a960e589fb4a99a9a1a583e2c9db613ad7043aea5280d2",
+  "/lib/light_monitor.py": "47479f0d5100501a031e749623d22c0712417ade63a4bd3cbcd417e537b8f5f8",
+  "/tcs34725.py": "35de48cf9a6340a3081b655dfac80cbcea9e1e1429fca73ebe8b745221bfcf47",
+  "/uservo.py": "82d199fb010e8b682ea19d178bd786937ec5bd2d30d26cfba4df1d94e42d5baf",
+  "/valve.json": "507a4c4d973f226e55f2e23b14808b0992503028c378a1df0a130b3b73469d81"
+}

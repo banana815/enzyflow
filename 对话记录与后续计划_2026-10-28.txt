@@ -1,0 +1,204 @@
+Enzyflow 对话记录与后续计划
+日期：2026-10-28
+工作目录：/home/orange/Work/enzyflow
+说明：这是本次对话的整理记录，保留用户任务、实施结果及后续计划；不是逐字聊天导出，不包含完整工具日志。
+
+一、用户任务与实施记录
+
+1. 创建 enzyflow 文件夹并复制 Downloads
+用户要求创建 enzyflow，将 ~/Downloads 中的文件复制进入。
+已创建 /home/orange/Work/enzyflow，复制 Downloads 全部内容，保留原文件。
+
+2. 阅读说明，通过电脑上的 Thonny 配置开发板
+已阅读《自驱动实验技术指导书 _V1.pdf》《自主控制实验.pdf》及示例代码。
+开发板：ESP32-S3。
+电脑上的 Thonny：4.1.7。
+安装目录：/home/orange/.local/opt/thonny。
+Thonny Python：/home/orange/.local/opt/thonny/bin/python3.10。
+初始配置端口为 /dev/ttyUSB0，但当时主机未识别开发板。
+经用户重新连接，实际识别为 /dev/ttyACM0，USB VID:PID 为 303a:4001。
+设备标识：44bd8d697f94。
+曾观察到稳定设备链接：
+/dev/serial/by-id/usb-Espressif_Systems_Espressif_Device_44bd8d697f940000-if00
+开发板实际返回：MicroPython v1.27.0 on 2026-05-11，Generic ESP32S3 module with Octal-SPIRAM。
+已确认 Thonny 能初始化、读取设备目录并通信。
+未重新烧录 MicroPython 二进制固件；后续“烧录”均指将 Python 脚本写入开发板文件系统。
+
+3. 确认光传感器及接线
+用户明确传感器为 AS7341。
+依据指导书第9页及示例代码，接线为：
+  AS7341 VCC -> 开发板 3.3V
+  AS7341 GND -> 开发板 GND
+  AS7341 SDA -> GPIO2（指导书中的开发板黑色信号线）
+  AS7341 SCL -> GPIO4（指导书中的开发板红色信号线）
+  INT、GPIO 不连接。
+以引脚标识为准，不能仅凭线色判断。
+I2C 总线1，频率100000Hz，AS7341 地址0x39。
+四根线可读取 F1~F8、Clear、NIR，采用分组顺序采集，并非全部同时采样。
+配套驱动有100/120Hz闪烁检测功能，但当前应用未启用、未验证。
+
+4. 验证接线与实际采集
+用户完成接线后，实际扫描到0x39和0x48；0x48未进一步识别。
+读取 AS7341 芯片 ID=0x24，驱动识别成功。
+首次十通道读数：
+  F1~F4：7、45、39、54
+  F5~F8：70、70、56、29
+  Clear=174，NIR=10
+这些是特定环境、配置下的原始计数，不是标定光强。
+
+5. 验证 LED
+用户要求确认传感器 LED 能否使用。
+按配套驱动测试0、4、20mA，并重复开关。
+Clear 读数：关闭49；4mA为2224；20mA为8748；关闭恢复49。
+第二次20mA为8758，关闭恢复49。
+LED 控制寄存器与设置相符，光照响应明显。
+结论：LED开关及电流设置有效，测试后关闭。
+
+6. 制作 LED 可调用库并写入开发板
+创建 /lib/as7341_led.py，类 AS7341LED。
+示例：
+  from as7341_led import AS7341LED
+  led = AS7341LED()
+  led.on()       # 默认4mA
+  led.on(20)     # 20mA
+  led.off()
+  led.get_current()  # 读取配置电流，不是电流实测值
+支持4~20mA偶数值；set_current(0)关闭。
+支持传入现有I2C实例；保留寄存器bank状态，避免无关设置被覆盖。
+已验证文件上传、导入、开关、参数拒绝和采样响应。
+
+7. 遮挡输出信号，获得光照后输出 RGB
+用户要求运行检测程序。
+已实现：启动时校准无遮挡环境光基准，连续3次低于基准20%判定BLOCKED；
+被遮挡后连续3次达到基准35%恢复LIGHT，使用迟滞减少反复切换。
+BLOCKED输出signal=1，LIGHT输出signal=0及RGB估算值。
+“信号”当前为USB串口文本/JSON，不是物理GPIO电平。
+LED在检测时关闭，避免补光干扰遮挡判断。
+RGB是基于波段分组、峰值归一化的显示估算，未经颜色标定，不应当作精确sRGB测量。
+实际光照采样和人工构造的状态切换逻辑测试通过；没有替用户进行物理遮挡动作。
+
+8. 整理 ESP32 脚本并部署，为以后 USB 光谱仪做准备
+已完整备份开发板原始文件至：
+  backups/before_reorganize/
+备份清单包含 SHA256：
+  backups/before_reorganize/manifest.json
+保留原 boot.py、calib.json、valve.json。
+将旧 tcs34725.py、uservo.py 驱动移入 /lib，未运行舵机或阀门。
+已整理代码为独立模块，写入开发板，逐文件SHA256校验通过。
+实际采样、LED测试、检测逻辑测试通过。
+实际软重启验证 main.py 自动运行并输出有效数据。
+软重启验证日志：backups/boot_verification.log。
+完成后已通过 Thonny 启动持续采集；这是当时状态，再次操作应重新检查进程及连接。
+
+二、当前项目结构与运行方法
+
+源码以 firmware/ 为准：
+  firmware/main.py                      上电自动启动，3秒Ctrl+C窗口
+  firmware/lib/enzyflow/config.py       接线、增益、采样、校准和检测参数
+  firmware/lib/enzyflow/acquisition.py  AS7341硬件采集
+  firmware/lib/enzyflow/processing.py   遮挡逻辑及RGB估算
+  firmware/lib/enzyflow/protocol.py     JSON Lines输出
+  firmware/lib/enzyflow/app.py          主应用
+  firmware/lib/as7341.py                配套驱动，增加测量超时
+  firmware/lib/as7341_smux_select.py    通道配置
+  firmware/lib/as7341_led.py            LED控制库
+  firmware/lib/light_monitor.py         兼容旧导入入口
+lib -> firmware/lib，为本地快捷符号链接。
+原本地代码保存在 archive/lib_before_reorganize/。
+详细运行说明在 README.txt。
+
+采样设置：ATIME=29，ASTEP=599，增益8倍。
+自动校准10帧，以Clear中位数为基准；每帧为两组依次采集，校准需要数秒。
+启动时保持无遮挡；过暗或饱和时报告错误，返回REPL。
+可在config.BASELINE中指定已测得的无遮挡基准，避免每次启动自动校准。
+Ctrl+C停止，重新运行：
+  from enzyflow.app import run
+  run()
+运行遮挡检测时不要另行开启LED。
+
+数据：每行一个JSON对象，schema=1，source=esp32.as7341。
+公共字段：device_id、seq、t_ms、event。
+measurement包含state、signal、channels(F1~F8)、clear、nir、saturated、rgb_approx。
+ready包含校准基准、阈值及采样参数。
+t_ms是会回绕的开发板计时，不是UTC时间；两台设备对齐需电脑记录接收时间。
+
+维护工具：
+  tools/board_tool.py：backup、deploy、exec；使用Thonny的Python运行。
+  tools/test_processing.py：防抖、迟滞和RGB边界测试。
+  tools/validate_board.py：一次性部署迁移及板上验证脚本。
+board_tool目前假设/dev/ttyACM0和恰好一个Thonny ESP后端。
+它会中断正在运行的应用、短暂暂停后端访问串口，再恢复后端。
+后续操作先检查实时端口和进程，不要依赖本次使用过的进程号8032。
+不要让电脑采集程序与Thonny同时占用同一串口。
+
+三、后续光谱仪：用户已确定的信息
+
+用户说明：是自己搭的光谱仪，USB插电脑，不直接插ESP32。
+随后补充名称：“小圃光谱仪，在bilibili上有视频”。
+检索找到B站UP主“窗台小圃”的DIY光谱仪系列，推测与用户设备对应；
+尚未插机确认具体硬件版本和USB类型。
+
+作者资料：
+入门使用教程：
+https://www.bilibili.com/video/BV17U421o7PP/
+改进版介绍：
+https://www.bilibili.com/video/BV1i94y1K7J6/
+色坐标、色温、显色指数算法：
+https://www.bilibili.com/video/BV1E7421o7gF/
+Theremino官方资料：
+https://www.theremino.com/downloads/automation
+
+已检索到作者视频页面及简介，没有完整观看视频。
+作者内容涉及Theremino；Theremino支持摄像头式光谱采集。
+推测设备可能通过USB输出光谱图像，再由电脑换算成曲线；这不是对用户设备的确认。
+不能假定光谱仪会像ESP32一样输出串口数值，也不能尚未测试就保证Linux兼容。
+目前没有安装或验证小圃光谱仪驱动。
+
+四、下一步实施计划
+
+1. 用户把光谱仪USB连接电脑后，读取USB VID/PID、设备类别、驱动、节点。
+   确认是视频设备、串口、HID还是其他协议，避免误用电脑内置摄像头。
+2. 核对作者配套软件、具体型号/版本及已有标定文件。
+   如为视频设备，检查分辨率、像素格式、曝光/增益控制以及光谱条带区域。
+   如为串口或专用协议，根据实际文档或软件源码实现适配，不猜测命令。
+3. 在电脑端实现独立的小圃光谱仪采集适配器。
+   如采集图像，需要光谱区域提取、像素到波长的标定、暗背景扣除及曝光记录。
+   标定方法和参考谱线需依据实际设备与可用校准光源确定。
+4. 电脑同时接收两条独立数据流：
+   AS7341 -> ESP32 -> USB串口 -> 电脑
+   小圃光谱仪 -> USB -> 电脑适配器
+   无需为此在ESP32实现USB Host。
+5. 统一保存与显示：
+   保留不同source/device_id；记录电脑接收时间。
+   光谱仪数据使用wavelength_nm/intensity数组和明确单位、曝光及标定信息。
+   AS7341仍保存八个离散波段及Clear/NIR，不冒充连续光谱。
+   电脑时间戳只提供近似对齐；真正同步采集需要另行设计触发/时钟方案。
+6. 验证暗场、光照变化、遮挡、峰值位置、曝光饱和与断线恢复。
+   未经响应标定，不把原始计数、归一化曲线或估算RGB当作绝对光强/精确颜色。
+7. 若后续需要物理遮挡输出信号，再由用户确定GPIO、外接负载与电平要求。
+   当前仅实现串口/JSON信号。
+
+五、后续继续工作的简要提示
+
+先读本文件及README.txt，检查硬件实际连接和Thonny状态。
+当前ESP32应用已部署并验证，不需重复刷MicroPython固件。
+后续重点是电脑端接入窗台小圃光谱仪；先识别真实USB设备再选择采集方式。
+现有标定数据和旧驱动应继续保留；任何替换前先备份。
+
+六、追加：桌面应用与顶栏颜色显示（2026-10-28）
+用户要求创建桌面应用，把扫描获得的颜色显示在当前电脑顶层bar。
+已创建desktop/，实现独立串口采集服务、Tk桌面窗口和Omarchy Quickshell色块。
+用户入口：启动器搜索Enzyflow，或点击顶栏“光”组件。
+服务：enzyflow-collector.service，用户级登录自动启动。
+窗口可开始、重新校准、暂停并释放串口，关闭窗口不结束后台服务。
+颜色来自ESP32的rgb_approx，未经颜色标定；断线或数据过期不会保留旧色块。
+初次验证AS7341通信超时，用户确认接线无松动；总线状态重置及软重启后恢复。
+串口交由服务采集；使用Thonny之前，先在窗口暂停/释放串口。
+项目说明、安装位置、测试及恢复方法见desktop/README.txt。
+桌面端到端实测通过：真实RGB=(230,255,184)，顶栏和窗口均显示#E6FFB8。
+最终保留暂停状态；点击“开始采集”即可继续。
+
+七、顶栏功能卸载
+用户要求恢复原顶栏并完全删除该功能。已停止桌面窗口和采集进程、禁用并卸载用户服务，删除桌面入口与QML组件，精确恢复安装前shell.json，shell响应正常，服务状态not-found。ESP32程序未改动。自动审批拒绝永久删除项目源码、备份和验证文件，因此desktop/及其备份、验证文件仍保留但不会自动运行；需用户额外确认永久删除。
+
+用户进一步确认永久删除，已删除desktop/源码、desktop_20261028_162547专用顶栏备份、桌面截图与日志、运行状态目录。桌面/顶栏功能清理完成；firmware/、开发板原始备份和本对话记录保留。

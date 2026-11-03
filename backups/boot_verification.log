@@ -1,0 +1,6 @@
+
+MPY: soft reboot
+{"rgb_method": "band_proxy_uncalibrated", "event": "starting", "seq": 0, "device_id": "44bd8d697f94", "source": "esp32.as7341", "t_ms": 6290457, "schema": 1, "version": "1.0.0", "led": "off"}
+{"t_ms": 6290707, "event": "calibrating", "seq": 1, "source": "esp32.as7341", "schema": 1, "instruction": "Keep sensor uncovered", "device_id": "44bd8d697f94"}
+{"device_id": "44bd8d697f94", "event": "ready", "light_above": 73.15, "gain": 8, "t_ms": 6297919, "baseline": 209, "seq": 2, "units": "raw_counts", "schema": 1, "atime": 29, "astep": 599, "sequential_groups": true, "blocked_below": 41.8, "source": "esp32.as7341"}
+{"event": "measurement", "signal": 0, "nir": 11, "t_ms": 6298462, "saturated": false, "channels": [15, 83, 74, 98, 128, 131, 101, 50], "state": "LIGHT", "seq": 3, "schema": 1, "clear": 209, "rgb_approx": [235, 255, 187], "source": "esp32.as7341", "device_id": "44bd8d697f94"}
