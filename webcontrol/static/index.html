@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="enzyflow-token" content="__ENZYFLOW_TOKEN__">
+  <meta name="theme-color" content="#214e40">
+  <title>Enzyflow · 三轴控制台</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="app-header">
+    <a class="brand" href="/" aria-label="Enzyflow 控制台">
+      <svg class="brand-mark" viewBox="0 0 36 36" aria-hidden="true"><path d="M8 8v20M18 8v20M28 8v20"/><path d="M4 14h8M14 23h8M24 11h8" class="brand-sliders"/></svg>
+      <span>enzyflow<span class="brand-sub">MOTION CONTROL</span></span>
+    </a>
+    <div class="header-right">
+      <span class="local-badge"><span class="local-dot"></span>本机控制</span>
+      <span class="header-divider"></span>
+      <button class="button button-quiet button-small" id="show-setup" type="button">设备与标定</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <div class="page-heading">
+      <div><div class="eyebrow">实验设备 / 位移调节</div><h1>三轴控制台<span class="heading-dot">.</span></h1><p class="page-description">独立调节各轴位置、注射速度与复位目标。</p></div>
+      <div class="session-indicator"><span class="status-light" id="connection-light"></span><div><strong id="connection-title">正在连接控制服务</strong><span id="connection-detail">等待本机服务响应</span></div></div>
+    </div>
+
+    <div class="notice notice-error" id="error-banner" role="alert" hidden><span class="notice-symbol">!</span><div id="error-message"></div><button class="icon-button" id="dismiss-error" type="button" aria-label="关闭提示">×</button></div>
+
+    <section class="control-bar" aria-label="设备操作">
+      <div class="device-summary"><span class="device-icon" aria-hidden="true">◫</span><div><span class="field-label">控制设备</span><strong id="device-name">ESP32 · USB / RS485</strong></div><span class="port-label" id="port-name">串口待连接</span></div>
+      <div class="device-actions"><button class="button button-danger" id="estop-button" type="button">急停三轴</button><button class="button button-primary" id="connect-button" type="button">连接设备</button><button class="button button-quiet" id="disconnect-button" type="button" hidden>断开连接</button><button class="button button-danger" id="stop-button" type="button" disabled><span class="stop-icon" aria-hidden="true"></span>停止</button></div>
+    </section>
+
+    <div class="notice notice-error" id="estop-banner" role="alert" hidden><div><strong>急停已锁定</strong><p id="estop-detail">等待停机确认</p><label class="checkbox-label"><input type="checkbox" id="estop-clear-confirm"><span>已确认设备停止、故障排除，允许恢复电机驱动力</span></label><button class="button button-outline" id="estop-clear" type="button" disabled>恢复驱动并解除急停</button></div></div>
+
+    <div class="ownership-banner" id="ownership-banner" hidden><div><strong>当前页面为只读状态</strong><span id="ownership-description">另一页面正在控制设备。</span></div><button class="button button-outline button-small" id="claim-button" type="button">获取控制权</button></div>
+
+    <section class="setup-panel" id="setup-panel" aria-labelledby="setup-title">
+      <div class="section-heading"><div><span class="section-kicker">开始前</span><h2 id="setup-title">建立本次位置基准</h2></div><button class="icon-button" id="close-setup" type="button" aria-label="收起标定面板" hidden>−</button></div>
+      <p class="setup-intro">首次使用先确认长短轴、尺量建立基准。每次正常到位或确认停止后自动保存位置；下次连接可恢复保存的位置，无需重复尺量。</p>
+      <p id="saved-position-state" class="setup-footnote"></p><button id="restore-positions" class="button button-secondary" disabled>恢复已保存位置</button>
+      <div class="mapping-form"><label class="checkbox-label"><input id="drive-restore-confirm" type="checkbox"><span>电机已停止、故障排除，允许恢复驱动力</span></label><button id="drive-restore" class="button button-secondary" disabled>恢复驱动状态</button></div><p class="setup-footnote">仅用于刹车或失能后无法启动：恢复不发送位移指令，会验证静止状态；恢复后核对位置再操作。日常中途结束用“停止”，停稳后可直接下发新目标。</p>
+      <div class="setup-steps" aria-label="准备进度"><span id="step-connect"><b>01</b>连接设备</span><span id="step-configure"><b>02</b>确认长短轴</span><span id="step-anchor"><b>03</b>尺量标定</span></div>
+      <div class="setup-body" id="setup-body">
+        <div class="mapping-form">
+          <div class="mapping-description"><h3>确认实物对应</h3><p>机号不能自动判断丝杆长短。请对照实物标签选择长轴，另两台为短轴。</p></div>
+          <label class="input-label long-axis-select">长轴机号<select id="long-axis-id"><option value="1">ID 1 · 上次确认的长轴</option><option value="2">ID 2</option><option value="3">ID 3</option></select></label>
+          <label class="checkbox-label"><input id="mapping-confirmed" type="checkbox"><span>已核对三台机号与实物</span></label>
+          <button class="button button-primary button-small" id="configure-button" type="button" disabled>确认对应关系</button>
+        </div>
+        <div class="calibration-grid" id="calibration-grid"></div>
+        <p class="setup-footnote"><span aria-hidden="true">ⓘ</span>保存位置基于丝杆不会被手动移动的条件。急停、未确认停稳、通信故障或机械拆装后须重新核对；正常断开后可恢复。重新确认机号会清除当前基准。</p>
+      </div>
+    </section>
+
+    <section class="motion-section" aria-labelledby="axes-title">
+      <div class="section-heading motion-heading"><div><span class="section-kicker">AXES</span><h2 id="axes-title">位置与速度</h2></div><div class="direction-note"><span>＋ 前进 · 远离零点</span><span>− 后退 · 靠近零点</span></div></div>
+      <div class="axis-grid" id="axis-grid"></div>
+      <div class="control-bar"><div>勾选参与轴，分别填写目标与速度后启动。各轴并行运动，起步略有先后。</div><button class="button button-primary" id="move-group" type="button" disabled>同时启动所选轴</button></div>
+    </section>
+
+    <section class="setup-panel" id="pump-panel" aria-labelledby="pump-title">
+      <div class="section-heading"><div><span class="section-kicker">SYRINGE FEED</span><h2 id="pump-title">双注射器恒速推进</h2></div></div>
+      <p class="setup-intro">内径 19.22 mm · 短轴 A、B 可分别设置注射速率，默认各 1 mL/min（1倍）。1倍对应推杆 3.4467 mm/min，4 mm/圈时为 0.861675 rpm。无压力反馈，不能作为恒压控制。</p>
+      <div class="calibration-grid" id="pump-inputs"></div>
+      <div class="mapping-form"><label class="checkbox-label"><input type="checkbox" id="pump-confirm"><span>已核对两支注射器内径、各自速率、推注方向和实测剩余行程</span></label><button class="button button-primary" id="pump-start" type="button" disabled>按 A、B 设定速率开始推进</button></div>
+      <p class="setup-footnote" id="pump-hint">先连接并标定两个短轴；剩余行程不使用历史数值。</p>
+      <p class="setup-footnote">推杆末端预留 1 mm，同时遵守丝杆安全区；任一轴到达设定终点时停止两轴。点击顶部“停止注射”可请求停止；关闭控制页或失去主机心跳会触发停机。显示体积由编码器估算，实际流量需收集称量校验。控制器断电或RS485故障时需切断电机电源，软件不能保证停机。</p>
+    </section>
+
+    <section class="setup-panel" aria-labelledby="reset-title"><div class="section-heading"><h2 id="reset-title">三轴连续复位到指定位置</h2></div><p class="setup-intro">各轴一次连续移动到你填写的位置，不是撞限位找零。请先确认各轴当前实测位置及回程空间。</p><div class="calibration-grid" id="reset-inputs"></div><div class="mapping-form"><label class="input-label">复位速度（rpm）<input id="reset-rpm" type="number" min="3" max="30" step="1" value="30"></label><label class="checkbox-label"><input id="reset-confirm" type="checkbox"><span>已核对三轴目标和运动路径，允许以此速度复位</span></label><button class="button button-primary" id="reset-start" type="button" disabled>三轴连续复位</button></div><p class="setup-footnote">默认30rpm，4mm导程名义速度约2mm/s；不再逐段停顿，各轴到位后独立停止。急停后排除故障，可恢复驱动并解除急停，再核对位置；不会自动复位或续跑。30rpm尚未完成带载实机验收。</p></section>
+
+    <section class="job-panel" id="job-panel" aria-labelledby="job-title" hidden>
+      <div class="job-top"><div><span class="section-kicker">当前任务</span><h2 id="job-title">等待运动</h2></div><span class="job-state" id="job-state"></span></div>
+      <div class="job-route"><span id="job-start">—</span><span class="job-route-line" aria-hidden="true"></span><strong id="job-target">—</strong><span id="job-progress-label">0%</span></div>
+      <div class="job-progress-track"><div id="job-progress-fill"></div></div><p class="job-detail" id="job-detail"></p>
+    </section>
+
+    <div class="safety-note"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2 3 5v5c0 4 7 8 7 8s7-4 7-8V5z"/><path d="M10 6v5m0 3v.1"/></svg><p>两端各保留 <strong>10 mm</strong> 余量；可选择多轴并行；区外恢复仅单轴低速向内。<strong>“停止”确认停稳后保留位置</strong>，可提交新任务；紧急情况使用“急停三轴”，恢复前须确认设备停止并排除故障。</p></div>
+
+    <section class="log-panel" aria-labelledby="log-title"><div class="section-heading"><div><span class="section-kicker">ACTIVITY</span><h2 id="log-title">操作记录</h2></div><span class="log-count" id="log-count">0 条</span></div><div class="log-list" id="log-list" aria-live="polite"><p class="empty-log">连接设备后，操作与反馈将在这里显示。</p></div></section>
+    <footer class="page-footer"><span>ENZYFLOW / THREE-AXIS CONTROLLER</span><span id="footer-status">位置以本次尺量基准与编码器反馈换算</span></footer>
+  </main>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

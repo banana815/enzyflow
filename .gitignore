@@ -16,3 +16,9 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Local control service logs and process state (never position defaults)
+webcontrol/runtime/
+
+# Local spectra and device-bound calibrations
+spectrometer/runtime/

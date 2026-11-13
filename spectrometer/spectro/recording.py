@@ -57,7 +57,7 @@ def _timestamp() -> tuple[str, str]:
     return now.strftime("%Y%m%d-%H%M%S"), now.isoformat(timespec="milliseconds")
 
 
-def save_csv(path: str | Path, result: SpectrumResult) -> Path:
+def save_csv(path: str | Path, result: SpectrumResult, photometry=None) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -74,6 +74,9 @@ def save_csv(path: str | Path, result: SpectrumResult) -> Path:
                 "intensity",
                 "display",
                 "luminance",
+                "raw_intensity",
+                "dark_background",
+                "transmittance", "absorbance", "reference_id",
             ]
         )
         for i in range(result.intensity.size):
@@ -87,6 +90,11 @@ def save_csv(path: str | Path, result: SpectrumResult) -> Path:
                     f"{float(result.intensity[i]):.6g}",
                     f"{float(result.display[i]):.6g}",
                     f"{float(result.luma[i]):.6g}",
+                    f"{float(result.raw_intensity[i]):.6g}" if result.raw_intensity is not None else "",
+                    f"{float(result.dark_profile[i]):.6g}" if result.dark_profile is not None else "",
+                    photometry['transmittance'][i] if photometry and photometry.get('active') else '',
+                    photometry['absorbance'][i] if photometry and photometry.get('active') else '',
+                    photometry.get('reference_id','') if photometry else '',
                 ]
             )
     tmp.replace(path)
@@ -123,9 +131,15 @@ def make_record(
         },
         "exposure": exposure,
         "calibration": calibration.to_dict() if calibration else None,
+        "dark_correction": {
+            "active": result.dark_profile is not None,
+            "metadata": result.dark_metadata,
+            "background": result.dark_profile.tolist() if result.dark_profile is not None else None,
+            "method": "intensity = raw_intensity - mean_dark - optional_zero; negatives retained; RGB unchanged",
+        },
         "units": {
             "wavelength": "nm",
-            "intensity": "camera counts 0..255, gain-corrected, not radiometrically calibrated",
+            "intensity": "camera counts, gain/dark/zero corrected as indicated; signed, not radiometrically calibrated",
         },
         "stats": result.summary(),
         "files": {},
@@ -136,6 +150,7 @@ def make_record(
             [round(float(v), 4) for v in result.wavelengths] if result.wavelengths is not None else None
         )
         record["intensity"] = [round(float(v), 5) for v in result.intensity]
+        record["raw_intensity"] = result.raw_intensity.tolist() if result.raw_intensity is not None else None
         record["display"] = [round(float(v), 5) for v in result.display]
         record["r"] = [round(float(v), 5) for v in result.r]
         record["g"] = [round(float(v), 5) for v in result.g]
@@ -169,6 +184,7 @@ def save_capture(
     save_frame: bool = True,
     save_ui: bool = True,
     stem: str | None = None,
+    extra: dict | None = None,
 ) -> dict[str, str]:
     """Write CSV + JSON metadata + optional PNGs.  Returns the file paths.
 
@@ -185,7 +201,7 @@ def save_capture(
     ui_path = out_dir / f"{base.name}-ui.png"
     frame_path = out_dir / f"{base.name}-frame.png"
 
-    save_csv(csv_path, result)
+    save_csv(csv_path, result, (extra or {}).get("photometry"))
     record = make_record(
         result,
         calibration=calibration,
@@ -197,6 +213,7 @@ def save_capture(
         note=note,
         include_arrays=False,
     )
+    record.update(extra or {})
     record["t_wall"] = iso
     files: dict[str, str] = {"csv": str(csv_path), "json": str(json_path)}
     if graph_image is not None:

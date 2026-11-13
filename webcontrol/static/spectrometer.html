@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="enzyflow-token" content="__ENZYFLOW_TOKEN__">
+  <meta name="theme-color" content="#214e40">
+  <title>Enzyflow · 光谱仪控制台</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="app-header">
+    <a class="brand" href="/" aria-label="Enzyflow 控制台">
+      <svg class="brand-mark" viewBox="0 0 36 36" aria-hidden="true"><path d="M8 8v20M18 8v20M28 8v20"/><path d="M4 14h8M14 23h8M24 11h8" class="brand-sliders"/></svg>
+      <span>enzyflow<span class="brand-sub">SPECTROMETER</span></span>
+    </a>
+    <div class="header-right">
+      <span class="local-badge"><span class="local-dot"></span>本机控制</span>
+      <span class="header-divider"></span>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <div class="page-heading"><div><div class="eyebrow">实验设备 / 光谱采集</div><h1>光谱仪控制台<span class="heading-dot">.</span></h1><p class="page-description">独立服务 · 暗场、波长标定与连续记录。</p></div></div>
+    <section class="setup-panel spectrum-panel" aria-labelledby="spectrum-title">
+      <div class="section-heading"><div><span class="section-kicker">USB SPECTROMETER</span><h2 id="spectrum-title">实时光谱</h2></div><span id="sp-status" role="status">未连接</span></div>
+      <p class="setup-intro">光谱仪 · UVC 视频采集（0c68:6464）。独立连接、校准和记录，无需启动电机控制台。</p>
+      <div class="mapping-form"><button class="button button-secondary" id="sp-scan">扫描光谱仪</button><label class="input-label sp-device-label">采集设备<select id="sp-device"><option value="">请先扫描设备</option></select></label><button class="button button-primary" id="sp-connect">连接光谱仪</button><button class="button button-secondary" id="sp-disconnect">断开光谱仪</button></div>
+      <p class="setup-footnote" id="sp-identity">仅接受已核对 USB 身份的采集接口；排除内置摄像头和 metadata 接口。</p>
+      <p id="sp-message" class="setup-footnote" role="status">等待连接。请在预览中确认狭缝光谱带。</p>
+      <p id="sp-error" class="sp-error" role="alert" hidden></p>
+      <div class="sp-visuals"><div class="sp-preview-wrap"><img id="sp-preview" alt="光谱仪实时预览与绿色 ROI 框" hidden><p id="sp-empty">连接后显示原始画面与光谱带选区</p></div><div><canvas id="sp-chart" width="900" height="380" aria-label="光谱曲线：横轴为像素或标定波长，纵轴为相机计数" role="img"></canvas><p id="sp-stats" class="setup-footnote">暂无光谱数据</p></div></div>
+      <fieldset class="sp-dark-panel"><legend>第一步 · 暗场本底扣除</legend>
+        <p class="setup-footnote">首次先接入完整光谱，等待自动识别光谱范围，设置手动曝光后再完全遮住入光口。已有匹配的暗场会自动恢复，无需重复采集。采集完成后打开入光口，保持设置不变即可测量。</p>
+        <div class="mapping-form"><label class="input-label">暗场平均帧数<input id="sp-dark-frames" type="number" min="8" max="256" value="32"></label><label class="checkbox-label"><input id="sp-dark-confirm" type="checkbox"><span>入光口已完全遮光，保持到采集完成</span></label><button class="button button-primary sp-live" id="sp-dark-start">采集暗场并校正</button><button class="button button-secondary sp-live" id="sp-dark-clear">取消采集 / 清除已存暗场</button></div>
+        <p id="sp-profile-state" role="status">校准完成后自动保存，重连无需重复校准。</p><button class="button button-secondary sp-live" id="sp-profile-restore">恢复校准时设置</button>
+        <p id="sp-dark-state" role="status">尚未采集暗场</p><progress id="sp-dark-progress" max="32" value="0" hidden aria-label="暗场采集进度"></progress>
+        <p class="setup-footnote">先丢弃 3 帧，再独立平均所选帧数。扣除后允许负值，以保留零点附近的真实噪声。底噪与波长标定自动保存；重连时恢复同一设备的设置和底噪。改变 ROI 或曝光时暂停套用旧底噪，可一键恢复校准时设置；平均、平滑、峰值保持不影响底噪。原始预览不作扣除。</p>
+      </fieldset>
+      <div class="sp-controls">
+        <fieldset><legend>自动光谱范围</legend><p id="sp-roi-state" class="setup-footnote" role="status">首次入光后自动识别完整光谱范围，重连沿用已保存范围。</p><p id="sp-roi-bounds" class="setup-footnote"></p><button class="button button-secondary sp-live" id="sp-auto-roi">重新识别光谱范围</button><p class="setup-footnote">无需填写坐标。首次用卤素灯完整光谱识别，自动覆盖高于底噪的有效光信号，排除孤立噪点；识别后固定并保存。仅在光路改变时重新识别；范围改变后需重新采集暗场及空白 I₀，原校准文件仍保留。</p></fieldset>
+        <fieldset><legend>手动曝光与处理</legend><div class="sp-fields"><label>曝光（100 µs）<input id="sp-exposure" type="number" min="1" max="5000" value="300"></label><label>平均帧数<input id="sp-average" type="number" min="1" max="100" value="8"></label></div><button class="button button-secondary sp-live" id="sp-expose">应用手动曝光</button><p class="setup-footnote">连接时自动固定为手动曝光并恢复保存值。暗场与样品测量保持相同曝光；改变曝光后需要匹配的暗场及 I₀。</p><p><label><input id="sp-smooth" type="checkbox" checked>平滑</label>　<label><input id="sp-hold" type="checkbox">峰值保持</label>　<button class="button button-secondary sp-live" id="sp-process">应用处理</button></p></fieldset>
+        <fieldset><legend>参考与导出</legend><button class="button button-secondary sp-live" data-sp-op="zero">记录零参考</button> <button class="button button-secondary sp-live" data-sp-op="clear_zero">清除零参考</button><p class="setup-footnote">零参考为逐像素减法，并非吸光度。改变 ROI、曝光或处理设置会清除零参考；已保存底噪仍保留。</p><button class="button button-primary sp-live" data-sp-op="save">保存当前光谱</button><p><label>记录间隔（秒）<input id="sp-interval" type="number" min="0.2" max="60" step="0.2" value="1"></label></p><button class="button button-secondary sp-live" id="sp-record">开始连续记录</button> <button class="button button-secondary sp-live" data-sp-op="record_stop">结束记录</button><span id="sp-record-state">未记录</span><div id="sp-files" class="sp-files"></div><p id="sp-file-directory" class="setup-footnote"></p><details><summary>全部历史记录与校准文件下载</summary><div id="sp-archive" class="sp-files"></div></details></fieldset>
+      </div>
+      <fieldset class="sp-dark-panel sp-lamp-panel"><legend>第二步 · 皓宇荧光灯波长标定</legend>
+        <p class="setup-footnote">完成暗场后，保持 ROI 和曝光不变，将入光口对准皓宇荧光灯。冻结实测灯谱，在下面选取对应峰；这里始终显示原图绝对像素，不使用参考图片的横坐标。</p>
+        <details><summary>查看 Archive 中的皓宇荧光灯参考图</summary><img class="sp-reference-image" src="/static/references/haoyu-fluorescent.png" alt="皓宇照明荧光灯参考光谱，主峰标为436、546、610nm，另有404nm峰"><p class="setup-footnote">来源：Archive/皓宇荧光灯.png。图中为整数 nm 标注，仅作近似参考，不是可溯源标准，不能据此声称亚纳米精度。487、512等宽峰可辅助辨认，不作为默认拟合锚点。</p></details>
+        <div class="mapping-form"><label class="checkbox-label"><input id="sp-lamp-confirm" type="checkbox"><span>入光口已对准皓宇荧光灯，使用本次暗场对应的设置</span></label><button class="button button-secondary sp-live" id="sp-lamp-prepare">准备32帧平均</button><button class="button button-primary sp-live" id="sp-lamp-capture">冻结当前灯谱用于选峰</button></div>
+        <p id="sp-lamp-status" role="status">首次使用请完成第一步；已保存校准会自动恢复。</p>
+        <canvas id="sp-lamp-chart" width="900" height="380" role="img" aria-label="皓宇灯光谱：冻结前实时预览，冻结后可选峰"></canvas>
+        <p class="setup-footnote">先点击下表某行“选这个峰”，再点击冻结曲线的相应峰顶（会吸附附近候选峰）。也可直接填原图像素。将平均帧数设为32或以上，保持光路不动，等待平均完成后冻结。默认以436、546、610nm作线性拟合；404nm填好后默认作独立验证，也可勾选加入拟合。</p>
+        <div class="sp-lamp-table-wrap"><table class="sp-lamp-table"><thead><tr><th>参考标注 / nm</th><th>实测像素</th><th>参与拟合</th><th>选峰</th></tr></thead><tbody>
+          <tr><td>404 · 补充峰</td><td><input id="sp-lamp-pixel-404" type="number" min="0" step="1" aria-label="404nm峰的实测像素"></td><td><input id="sp-lamp-use-404" type="checkbox" aria-label="404nm参与拟合"></td><td><button class="button button-secondary" data-lamp-select="404">选这个峰</button></td></tr>
+          <tr><td>436 · 蓝紫主峰</td><td><input id="sp-lamp-pixel-436" type="number" min="0" step="1" aria-label="436nm峰的实测像素"></td><td><input id="sp-lamp-use-436" type="checkbox" checked aria-label="436nm参与拟合"></td><td><button class="button button-secondary" data-lamp-select="436">选这个峰</button></td></tr>
+          <tr><td>546 · 绿主峰</td><td><input id="sp-lamp-pixel-546" type="number" min="0" step="1" aria-label="546nm峰的实测像素"></td><td><input id="sp-lamp-use-546" type="checkbox" checked aria-label="546nm参与拟合"></td><td><button class="button button-secondary" data-lamp-select="546">选这个峰</button></td></tr>
+          <tr><td>610 · 橙红主峰</td><td><input id="sp-lamp-pixel-610" type="number" min="0" step="1" aria-label="610nm峰的实测像素"></td><td><input id="sp-lamp-use-610" type="checkbox" checked aria-label="610nm参与拟合"></td><td><button class="button button-secondary" data-lamp-select="610">选这个峰</button></td></tr>
+        </tbody></table></div>
+        <label>拟合模型 <select id="sp-lamp-degree"><option value="1">线性（避免外推折返，需检查残差）</option><option value="2">二次（全幅必须单调）</option></select></label>
+        <button class="button button-primary sp-live" id="sp-lamp-calibrate">按对应峰拟合并保存波长标定</button>
+        <pre id="sp-lamp-report" class="setup-footnote" role="status">尚未进行皓宇灯标定</pre>
+      </fieldset>
+      <fieldset><legend>卤素灯空白参考 I₀与样品比值</legend>
+        <p class="setup-footnote">取出样品，保持实际测试光路与曝光，将平均帧数设为32或以上并等待稳定。参考谱自动保存，重连自动加载。</p>
+        <label class="checkbox-label"><input type="checkbox" id="sp-halogen-confirm"><span>当前为空白光路、无样品的卤素灯参考</span></label>
+        <button class="button button-primary sp-live" id="sp-halogen-save">保存空白卤素灯 I₀</button>
+        <p id="sp-halogen-state" class="setup-footnote"></p>
+        <label>曲线<select id="sp-ratio-mode"><option value="transmittance">透过率 I/I₀</option><option value="absorbance">吸光度 −log₁₀(I/I₀)</option></select></label>
+        <canvas id="sp-ratio-chart" width="900" height="380" aria-label="样品透过率或吸光度" role="img"></canvas>
+        <p class="setup-footnote">弱参考、饱和或非正样品值不计算。透过损失 1−I/I₀ 还包含反射和散射，不能直接当作材料吸收率。JSON、JSONL和CSV保留比值数据与参考编号。</p>
+      </fieldset>
+      <details class="sp-calibration"><summary>高级：手工波长标定 / 清除标定</summary><p class="setup-footnote">输入至少 3 组「原图绝对像素:已知波长 nm」，逗号分隔。标定按设备身份及分辨率保存；光路改变后须重新标定。</p><label class="input-label">标定点<input id="sp-points" type="text" placeholder="像素:波长, 像素:波长, 像素:波长"></label><button class="button button-primary sp-live" id="sp-calibrate">拟合并保存标定</button> <button class="button button-secondary sp-live" data-sp-op="clear_calibration">清除标定</button><p id="sp-cal-state" class="setup-footnote">未标定 · 横轴为像素</p></details>
+      <p class="setup-footnote">强度为相机计数，未经绝对光强定标。低光或饱和时请调整光路及曝光。导出包含 CSV、JSON、光谱图与原始帧；软件时间戳不代表与电机硬件同步。</p>
+    </section>
+
+    <footer class="page-footer"><span>ENZYFLOW / SPECTROMETER</span><span>采集与校准文件保存在本机</span></footer>
+  </main>
+  <script src="/static/spectrometer.js" defer></script>
+</body>
+</html>

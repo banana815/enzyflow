@@ -1,0 +1,23 @@
+{
+  "saved_date": "2026-11-04",
+  "hardware_testing_deferred_by_user": true,
+  "real_web_rpc_verified": false,
+  "firmware_tests_passed": 138,
+  "host_tests_passed": 26,
+  "last_verified_long_mm": 101.00023,
+  "last_verified_encoders": {
+    "1": -630662,
+    "2": 17076,
+    "3": -9775
+  },
+  "historical_positions_are_not_startup_defaults": true,
+  "transport_dtr": false,
+  "transport_rts": false,
+  "independent_python": "/home/orange/Work/enzyflow/.venv/bin/python",
+  "pyserial_version": "3.5",
+  "firmware_sha256": {
+    "motor_bus.py": "4abeebc65d3f13ad6692ac676887ad1b77b38067e4d0f84f0c675d0beeba1991",
+    "motor_safety.py": "b1ac145047ede3f09a7f831a6b85e4572543298670f1c5ce864b898b6b7eaf8e",
+    "motor_web.py": "a8e5072d1398e896e9e8130150d792a78cfe5e8fe4f0a74e7cbc761e11aa992f"
+  }
+}

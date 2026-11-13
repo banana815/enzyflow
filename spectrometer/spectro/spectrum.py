@@ -7,11 +7,12 @@ Per frame:
 3. average the last N frames (the "buffer" from spectro-cam-rs);
 4. apply per-channel gains;
 5. combine to an intensity curve;
-6. subtract an optional zero reference (absorption / dark reference);
+6. subtract an optional dark profile, then an optional zero reference;
 7. optionally hold peaks and apply a Savitzky-Golay display filter.
 
-Raw exported intensity is the combined, gain-corrected camera count
-(0..255); smoothing and peak hold affect display/peak labels only.
+raw_intensity is the combined, gain-corrected camera count before dark/zero
+subtraction. intensity retains signed corrected values; smoothing and peak
+hold affect display/peak labels only.
 """
 
 from __future__ import annotations
@@ -59,6 +60,9 @@ class SpectrumResult:
     buffer_len: int
     zero_active: bool
     hold_active: bool
+    raw_intensity: np.ndarray | None = None
+    dark_profile: np.ndarray | None = None
+    dark_metadata: dict | None = None
 
     @property
     def peak_index(self) -> int:
@@ -85,6 +89,7 @@ class SpectrumResult:
             "buffer_len": int(self.buffer_len),
             "zero_reference": bool(self.zero_active),
             "hold_peaks": bool(self.hold_active),
+            "dark_corrected": self.dark_profile is not None,
         }
 
 
@@ -96,6 +101,9 @@ class SpectrumProcessor:
         self._zero: np.ndarray | None = None
         self._hold: np.ndarray | None = None
         self._last_raw: np.ndarray | None = None
+        self._dark: np.ndarray | None = None
+        self._dark_metadata: dict | None = None
+        self._dark_pixel_start: int | None = None
 
     # ------------------------------------------------------------- lifecycle
     def set_config(self, config: ProcessingConfig) -> None:
@@ -113,6 +121,20 @@ class SpectrumProcessor:
         self._zero = None
         self._last_raw = None
         self._width = None
+        self._dark = self._dark_metadata = self._dark_pixel_start = None
+
+    def set_dark_reference(self, profile, metadata, pixel_start):
+        import copy
+        profile = np.asarray(profile, dtype=np.float32)
+        if profile.ndim != 1 or not profile.size or not np.all(np.isfinite(profile)):
+            raise ValueError("invalid dark profile")
+        self.reset()
+        self._dark = profile.copy()
+        self._dark_metadata = copy.deepcopy(metadata)
+        self._dark_pixel_start = int(pixel_start)
+
+    def clear_dark_reference(self):
+        self.reset()
 
     def set_hold(self, enabled: bool) -> None:
         self.config.hold_peaks = bool(enabled)
@@ -163,6 +185,8 @@ class SpectrumProcessor:
     def update(self, crop: np.ndarray, pixel_start: int = 0) -> SpectrumResult:
         r, g, b, luma = self._extract(crop)
         width = int(r.size)
+        if self._dark is not None and (self._dark.size != width or self._dark_pixel_start != pixel_start):
+            self.reset()
         if self._width is not None and width != self._width:
             # A different ROI width invalidates the buffer and zero reference.
             self.clear_buffer()
@@ -181,7 +205,10 @@ class SpectrumProcessor:
         b = average[2] * float(self.config.gain_b)
         intensity = (r + g + b) / 3.0
         raw = intensity.copy()
-        self._last_raw = raw
+        if self._dark is not None:
+            intensity = intensity - self._dark
+        # Zero reference is captured after dark subtraction, preventing double subtraction.
+        self._last_raw = intensity.copy()
 
         if self._zero is not None and self._zero.shape == intensity.shape:
             intensity = intensity - self._zero
@@ -225,4 +252,7 @@ class SpectrumProcessor:
             buffer_len=len(self._buffer),
             zero_active=self._zero is not None,
             hold_active=bool(self.config.hold_peaks),
+            raw_intensity=raw,
+            dark_profile=self._dark,
+            dark_metadata=self._dark_metadata,
         )

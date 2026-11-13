@@ -1,5 +1,7 @@
 # Enzyflow 电脑端 USB 光谱仪（Linux / 二次开发）
 
+**独立网页入口（2026-11-13）：** 运行根目录 `./start-spectrometer.sh`，默认打开 `http://127.0.0.1:8766/`。支持预览、曲线、ROI、曝光、标定、导出与连续记录；不需要启动电机服务或安装 pyserial。网页依赖见 `webcontrol/requirements-spectrometer.txt`。网页采用更严格的 USB 身份隔离规则，详见[网页手册](../docs/web-control.md#usb-spectrometer-web)；下文设备自动选择规则描述的是原独立 CLI。
+
 这是一个面向当前这台 Linux 电脑的 USB 摄像头式光谱仪采集程序。它不是把
 Raspberry Pi 版本原样搬过来，而是按下面三份代码的原理重新组织的：
 

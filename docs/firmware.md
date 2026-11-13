@@ -1,11 +1,26 @@
-# ESP32-S3 板端固件
+# ESP32 固件架构与 AS7341
 
-[返回文档索引](README.md) · [数据格式](data-format.md) · [电机接线与控制](motor.md)
+[文档索引](README.md) · [三轴操作手册](motor.md) · [维护工具](../tools/README.md)
 
-板端使用 ESP32-S3 / MicroPython 1.27。部署源码以
-[`firmware/`](../firmware/) 为准；顶层 `lib -> firmware/lib` 是本地快捷符号链接。
-下文运行说明依据原 README、现有源码及
-[2026-10-28 历史记录](history-2026-10-28.md)，本次文档整理未连接开发板。
+板端使用 ESP32-S3 / MicroPython 1.27，源码以 `firmware/` 为准。
+本页说明部署布局、模块职责和传感器采集；三轴参数、1 cm 余量和操作步骤统一见
+[三轴操作手册](motor.md)，避免在多个文档重复维护同一组参数。
+
+## 两个运行入口
+
+- `/main.py`：上电等待3秒后启动 AS7341 自动采集，保留 `Ctrl+C` 窗口。
+- `/motor_debug.py`：在 Thonny 中手动运行的三轴交互入口，不随上电自动运动。
+
+两者在同一个 MicroPython 会话中使用；切换到电机调试前先停止传感器采集。
+
+| 控制层 | 职责 | 不负责的内容 |
+|---|---|---|
+| `motor_console` | 人工确认实物、单位和命令；显示结果 | 不自行判断机械长短或当前位置 |
+| `motor_safety` | 本次位置基准、逐轴导程、目标余量、反馈检查和锁定 | 不把历史位置作为启动默认值 |
+| `motor_bus` | UART 报文、校验和、超时、有限脉冲写入 | 不独立提供机械行程保护 |
+
+正常运动必须走 `motor_console → motor_safety → motor_bus`。旧 `motor_config.py`
+仅为历史单轴兼容代码；它的100mm参考值不适用于当前三轴控制。
 
 ## 文件职责与板上布局
 
@@ -14,6 +29,10 @@
 | 仓库源码 | 板上路径 | 职责 |
 |---|---|---|
 | [`firmware/main.py`](../firmware/main.py) | `/main.py` | 自动启动，保留 3 秒 `Ctrl+C` 窗口 |
+| [`firmware/motor_debug.py`](../firmware/motor_debug.py) | `/motor_debug.py`，或 Thonny 打开本地文件 F5 | 手动启动三丝杆调试，不在开机时运行 |
+| [`motor_console.py`](../firmware/lib/enzyflow/motor_console.py) | `/lib/enzyflow/motor_console.py` | 长短轴、机号和逐轴标定提示，独立前进/后退命令 |
+| [`motor_safety.py`](../firmware/lib/enzyflow/motor_safety.py) | `/lib/enzyflow/motor_safety.py` | 会话位置基准、按轴行程检查、反馈验证与故障锁定 |
+| [`motor_bus.py`](../firmware/lib/enzyflow/motor_bus.py) | `/lib/enzyflow/motor_bus.py` | 有界串口读取、应答校验、有限小段运动；无硬件停止命令 |
 | [`config.py`](../firmware/lib/enzyflow/config.py) | `/lib/enzyflow/config.py` | 引脚、增益、时序、基准与检测阈值 |
 | [`acquisition.py`](../firmware/lib/enzyflow/acquisition.py) | `/lib/enzyflow/acquisition.py` | AS7341 读取与 LED 关闭 |
 | [`processing.py`](../firmware/lib/enzyflow/processing.py) | `/lib/enzyflow/processing.py` | 遮挡状态逻辑与近似 RGB |
@@ -22,7 +41,7 @@
 | [`as7341.py`](../firmware/lib/as7341.py)、[`as7341_smux_select.py`](../firmware/lib/as7341_smux_select.py) | `/lib/` 下同名文件 | 传感器驱动、测量超时与通道配置 |
 | [`as7341_led.py`](../firmware/lib/as7341_led.py) | `/lib/as7341_led.py` | LED 电流设置与开关 |
 | [`light_monitor.py`](../firmware/lib/light_monitor.py) | `/lib/light_monitor.py` | 兼容旧导入入口 |
-| [`motor_config.py`](../firmware/lib/enzyflow/motor_config.py) | `/lib/enzyflow/motor_config.py` | 电机坐标换算与软件范围检查；本身不发送运动命令 |
+| [`motor_config.py`](../firmware/lib/enzyflow/motor_config.py) | `/lib/enzyflow/motor_config.py` | 历史单轴换算与范围检查；新三轴控制路径不使用其位置基准 |
 
 原 README 还记录了板上保留的 `/boot.py`、`/calib.json`、`/valve.json`，以及
 移入 `/lib/` 的旧驱动 `tcs34725.py`、`uservo.py`。这些不是当前 `firmware/`
@@ -96,34 +115,18 @@ led.off()
 流应保留不同的 `source` / `device_id`，由电脑记录接收时间以近似对齐；真正同步
 需要另行设计触发/时钟方案。完整字段说明见[数据格式](data-format.md)。
 
-## 维护工具与电机配置
+## 测试、维护与证据
 
-维护工具使用的主机解释器为 `/home/orange/.local/opt/thonny/bin/python3.10`。
+- [离线测试](../tests/README.md)：`python tools/test_firmware.py`，不连接设备。
+- [维护工具](../tools/README.md)：备份、部署、板端逻辑验证及受监督调试模板。
+- [备份清单](../backups/README.md)：区分完整与中断备份。
+- [三轴实测记录](motor-session-20261104.md)：机号保存、方向更正、尺量和最终参数。
 
-| 工具 | 用途与边界 |
-|---|---|
-| [`tools/board_tool.py`](../tools/board_tool.py) | `backup`、`deploy`、`exec`；使用当前 Thonny 后端和固定 `/dev/ttyACM0`，要求恰好一个 ESP 后端。会中断应用、短暂暂停后端串口访问后恢复；部署前先备份，部署时校验 SHA256，最后安装 `main.py` |
-| [`tools/test_processing.py`](../tools/test_processing.py) | 纯处理逻辑的防抖、迟滞及 RGB 边界测试 |
-| [`tools/validate_board.py`](../tools/validate_board.py) | 一次性部署验证/迁移脚本，会操作开发板，不是普通离线测试 |
+原 `tools/validate_board.py` 已归档为
+[`archive/board_migration_20261028.py`](../archive/board_migration_20261028.py)。
+它会重命名板上文件、采样并操作 LED，不是通用验证脚本，不由离线测试入口运行。
 
-维护前需重新确认当时的连接及进程状态，不能依赖历史进程号；不要让电脑采集程序
-与 Thonny 同时占用 ESP32 串口。此次整理没有执行这些维护工具。
-
-2026-11-03 用户确认的电机配置为 UART1、TX5、RX6、ID1、115200，导程
-4 mm/圈，可用范围 20–220 mm，当时位置为 100 mm；正转使位置减小，
-1 cm 对应 900° / 128000 脉冲。`checked_delta_degrees()` 只检查范围并返回角度，
-原始 `motor_ctrl` 命令绕过该范围检查。驱动复位、掉电、清零或手动移动后必须重新
-建立位置参照，不能每次启动都假定仍为 100 mm。接线和历史实测见[电机文档](motor.md)。
-
-## 已验证与未验证
-
-- **历史已验证（2026-10-28）**：Thonny 通信、AS7341 读取、LED 开关及配置电流
-  对采样的影响、逐文件部署 SHA256 校验、软重启自动运行。软重启日志见
-  [`backups/boot_verification.log`](../backups/boot_verification.log)。
-- **历史测试范围有限**：实际光照采样与人工构造的状态切换逻辑测试通过，但没有
-  替用户进行物理遮挡动作。未运行舵机或阀门的说明属于该日期记录；电机后续状态
-  以[电机文档](motor.md)中的日期和限定为准。
-- **未验证或未标定**：AS7341 驱动的 100/120 Hz 闪烁检测未启用、未验证；
-  扫描到的 `0x48` 未进一步识别；原始计数与 RGB 未作光强/颜色标定。
-- **本次未复测硬件**：历史采集进程、接线、板上文件与电机位置都不能据旧记录
-  推定仍处于同一状态。
+AS7341 的既有硬件证据来自2026-10-28：读取、LED控制、上传校验及软重启自动采集；
+见[原始记录](history-2026-10-28.md)与[启动日志](../backups/boot_verification.log)。
+没有据此验证人工遮挡动作、100/120Hz闪烁检测或绝对辐射定标；曾扫描到的`0x48`未识别。
+本次代码与文档整理没有重新连接或运行硬件。

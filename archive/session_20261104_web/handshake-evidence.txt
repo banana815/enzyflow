@@ -1,0 +1,21 @@
+2026-11-04 真实串口只读诊断（DTR=False，RTS=False）
+
+RAW_PROMPT:
+b'\r\nraw REPL; CTRL-B to exit\r\n>'
+
+简单程序:
+b'OKRPC_DIAG_HELLO\r\n\x04\x04>'
+
+motor_web.run()启动（前有BEFORE_RUN诊断输出）:
+b'OKBEFORE_RUN\r\n4cb8f3e452ab76", "event": "ready", "state": {"axes": [], "long_id": null, "rpm_min": 3, "configured": false, "last_feedback_ms": null, "protocol": 1, "counts": {}, "default_rpm": 6, "feedback_cached": true, "rpm_max": 30, "margin_mm": 10.0}, "protocol": 1}rgin_mm": 10.0}, "protocol": 1}\r\n'
+
+Ctrl+C后的堆栈:
+File "<stdin>", line 3, in <module>
+File "/lib/enzyflow/motor_web.py", line 264, in run
+File "/lib/enzyflow/motor_web.py", line 64, in _read_line
+KeyboardInterrupt
+
+观察：raw REPL和OK有效，程序进入stdin等待；ready JSON丢前缀并重复尾部。
+板端RPC假总线检查通过；没有patch motor_web.MotorBus或sys.stdout。
+DTR=True对比尚未执行成功：尝试时/dev/ttyACM0已不存在，随后枚举无Espressif设备。
+用户要求下次再测试，本次不再操作真实串口。

@@ -1,0 +1,463 @@
+{
+  "estop_latched": false,
+  "estop_confirmed": null,
+  "connected": true,
+  "connecting": false,
+  "demo": false,
+  "port": "/dev/ttyUSB0",
+  "device": "ESP32 · /dev/ttyUSB0",
+  "session": "ab75fcc727b4fa31910950a4940176b3",
+  "axes": [
+    {
+      "physical_min_mm": 20.0,
+      "min_mm": 30.0,
+      "max_mm": 310.0,
+      "anchored": false,
+      "lead_mm": null,
+      "forward_sign": null,
+      "max_jog_mm": null,
+      "name": "长轴",
+      "physical_max_mm": 320.0,
+      "position_mm": null,
+      "id": 1
+    },
+    {
+      "physical_min_mm": 20.0,
+      "min_mm": 30.0,
+      "max_mm": 210.0,
+      "anchored": false,
+      "lead_mm": null,
+      "forward_sign": null,
+      "max_jog_mm": null,
+      "name": "短轴 A",
+      "physical_max_mm": 220.0,
+      "position_mm": null,
+      "id": 2
+    },
+    {
+      "physical_min_mm": 20.0,
+      "min_mm": 30.0,
+      "max_mm": 210.0,
+      "anchored": false,
+      "lead_mm": null,
+      "forward_sign": null,
+      "max_jog_mm": null,
+      "name": "短轴 B",
+      "physical_max_mm": 220.0,
+      "position_mm": null,
+      "id": 3
+    }
+  ],
+  "counts": {
+    "1": 15510,
+    "3": 422053,
+    "2": 623453
+  },
+  "configured": true,
+  "long_id": 1,
+  "margin_mm": 10.0,
+  "rpm_min": 3,
+  "rpm_max": 30,
+  "job": {
+    "id": "26e9907a82064bb791b7fe912d3350a0",
+    "kind": "reset_continuous",
+    "reset": true,
+    "state": "done",
+    "owner": "32cf4907-27d1-4116-a77b-7c16c742400b",
+    "members": [
+      {
+        "done": true,
+        "progress": 1.0,
+        "start_mm": 110.0,
+        "target_mm": 100.0,
+        "approach_mm": 100.0,
+        "position_mm": 99.99985,
+        "axis": 1,
+        "rpm": 30
+      },
+      {
+        "done": true,
+        "progress": 1.0,
+        "start_mm": 110.0,
+        "target_mm": 40.0,
+        "approach_mm": 40.0,
+        "position_mm": 39.998124,
+        "axis": 2,
+        "rpm": 30
+      },
+      {
+        "done": true,
+        "progress": 1.0,
+        "start_mm": 95.00024,
+        "target_mm": 40.0,
+        "approach_mm": 39.999768,
+        "position_mm": 40.000232,
+        "axis": 3,
+        "rpm": 30
+      }
+    ],
+    "progress": 1.0,
+    "error": null
+  },
+  "owner": null,
+  "operation": null,
+  "last_error": null,
+  "auto_connect": true,
+  "capabilities": [
+    "recover",
+    "jog_group",
+    "emergency_stop",
+    "pump",
+    "pump_rates",
+    "continuous_reset"
+  ],
+  "last_feedback_ms": 16386769,
+  "pump": {
+    "stop_fault": false,
+    "state": null,
+    "members": [
+      {
+        "axis": 2,
+        "distance_mm": 29.0,
+        "flow_ml_min": 1.0,
+        "mm_min": 3.446699,
+        "volume_ml": 6.690596,
+        "progress": 0.7949595,
+        "direction": 1,
+        "start_mm": 82.0,
+        "position_mm": 105.06047,
+        "end_mm": 111.0,
+        "rpm": 0.8616747
+      },
+      {
+        "axis": 3,
+        "distance_mm": 49.0,
+        "flow_ml_min": 1.0,
+        "mm_min": 3.446699,
+        "volume_ml": 6.690506,
+        "progress": 0.47041616,
+        "direction": 1,
+        "start_mm": 66.0,
+        "position_mm": 89.06016,
+        "end_mm": 115.0,
+        "rpm": 0.8616747
+      }
+    ],
+    "diameter_mm": 19.22,
+    "total_flow_ml_min": 2.0,
+    "active": false,
+    "reference_flow_ml_min": 1.0
+  },
+  "reset": {
+    "state": "done",
+    "continuous": true,
+    "members": [
+      {
+        "done": true,
+        "progress": 1.0,
+        "start_mm": 110.0,
+        "target_mm": 100.0,
+        "approach_mm": 100.0,
+        "position_mm": 99.99985,
+        "axis": 1,
+        "rpm": 30
+      },
+      {
+        "done": true,
+        "progress": 1.0,
+        "start_mm": 110.0,
+        "target_mm": 40.0,
+        "approach_mm": 40.0,
+        "position_mm": 39.998124,
+        "axis": 2,
+        "rpm": 30
+      },
+      {
+        "done": true,
+        "progress": 1.0,
+        "start_mm": 95.00024,
+        "target_mm": 40.0,
+        "approach_mm": 39.999768,
+        "position_mm": 40.000232,
+        "axis": 3,
+        "rpm": 30
+      }
+    ],
+    "stop_fault": false,
+    "active": false
+  },
+  "events": [
+    {
+      "time": "2026-11-11T06:16:19.466554+00:00",
+      "level": "info",
+      "message": "控制台已启动，等待连接 ESP32。"
+    },
+    {
+      "time": "2026-11-11T06:23:44.327294+00:00",
+      "level": "warning",
+      "message": "控制页面心跳中断，取消后续运动并锁定；重新确认位置后才能操作。"
+    },
+    {
+      "time": "2026-11-11T06:24:00.296101+00:00",
+      "level": "info",
+      "message": "ESP32 已连接，所有轴保持锁定；请确认机号和当前尺量位置。"
+    },
+    {
+      "time": "2026-11-11T06:24:06.128885+00:00",
+      "level": "info",
+      "message": "机号与长短轴对应已确认。"
+    },
+    {
+      "time": "2026-11-11T06:24:10.983582+00:00",
+      "level": "info",
+      "message": "ID1 已按当前尺量位置 100.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T06:24:16.072758+00:00",
+      "level": "info",
+      "message": "ID2 已按当前尺量位置 50.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T06:24:21.880316+00:00",
+      "level": "info",
+      "message": "ID3 已按当前尺量位置 50.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T06:36:24.212266+00:00",
+      "level": "info",
+      "message": "两支注射器开始恒速推进：ID2 1mL/min；ID3 0.5mL/min"
+    },
+    {
+      "time": "2026-11-11T06:46:08.455913+00:00",
+      "level": "warning",
+      "message": "已请求停止：当前有限小段结束后，不再发送后续运动。"
+    },
+    {
+      "time": "2026-11-11T06:46:09.469192+00:00",
+      "level": "error",
+      "message": "停止未确认，请切断电机电源并检查。"
+    },
+    {
+      "time": "2026-11-11T06:47:31.062627+00:00",
+      "level": "warning",
+      "message": "急停已触发，等待三轴刹车反馈；所有运动被锁定。"
+    },
+    {
+      "time": "2026-11-11T06:47:31.369521+00:00",
+      "level": "warning",
+      "message": "三轴急停已确认并失能；请电机断电重启、排除原因后解除锁定并重新标定。"
+    },
+    {
+      "time": "2026-11-11T06:47:35.364873+00:00",
+      "level": "info",
+      "message": "急停锁存已解除。请连接设备并重新尺量标定；不会自动运动。"
+    },
+    {
+      "time": "2026-11-11T06:47:37.802509+00:00",
+      "level": "info",
+      "message": "ESP32 已连接，所有轴保持锁定；请确认机号和当前尺量位置。"
+    },
+    {
+      "time": "2026-11-11T06:47:49.900168+00:00",
+      "level": "info",
+      "message": "机号与长短轴对应已确认。"
+    },
+    {
+      "time": "2026-11-11T06:47:59.623912+00:00",
+      "level": "info",
+      "message": "ID1 已按当前尺量位置 100.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T06:48:06.678700+00:00",
+      "level": "info",
+      "message": "ID2 已按当前尺量位置 82.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T06:48:39.827740+00:00",
+      "level": "info",
+      "message": "ID3 已按当前尺量位置 66.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T06:49:23.965507+00:00",
+      "level": "info",
+      "message": "两支注射器开始恒速推进：ID2 1mL/min；ID3 1mL/min"
+    },
+    {
+      "time": "2026-11-11T06:49:27.079185+00:00",
+      "level": "warning",
+      "message": "注射方向、速度或编码器反馈异常"
+    },
+    {
+      "time": "2026-11-11T06:50:11.702756+00:00",
+      "level": "info",
+      "message": "机号与长短轴对应已确认。"
+    },
+    {
+      "time": "2026-11-11T06:50:18.410198+00:00",
+      "level": "warning",
+      "message": "已请求停止：当前有限小段结束后，不再发送后续运动。"
+    },
+    {
+      "time": "2026-11-11T06:50:23.313466+00:00",
+      "level": "warning",
+      "message": "控制页面心跳中断，取消后续运动并锁定；重新确认位置后才能操作。"
+    },
+    {
+      "time": "2026-11-11T06:50:30.593515+00:00",
+      "level": "info",
+      "message": "机号与长短轴对应已确认。"
+    },
+    {
+      "time": "2026-11-11T06:50:35.530349+00:00",
+      "level": "info",
+      "message": "ID1 已按当前尺量位置 100.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T06:50:44.441070+00:00",
+      "level": "info",
+      "message": "ID2 已按当前尺量位置 82.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T06:50:49.720199+00:00",
+      "level": "info",
+      "message": "ID3 已按当前尺量位置 66.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T06:51:31.240612+00:00",
+      "level": "info",
+      "message": "两支注射器开始恒速推进：ID2 1mL/min；ID3 1mL/min"
+    },
+    {
+      "time": "2026-11-11T06:58:12.884137+00:00",
+      "level": "warning",
+      "message": "已请求停止：当前有限小段结束后，不再发送后续运动。"
+    },
+    {
+      "time": "2026-11-11T06:58:20.101589+00:00",
+      "level": "info",
+      "message": "ID1 已按当前尺量位置 100.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T06:58:23.319730+00:00",
+      "level": "info",
+      "message": "ID2 已按当前尺量位置 82.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T06:58:24.869100+00:00",
+      "level": "info",
+      "message": "ID3 已按当前尺量位置 66.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T06:59:05.599695+00:00",
+      "level": "info",
+      "message": "长轴：目标 110.0 mm，速度 12 rpm。"
+    },
+    {
+      "time": "2026-11-11T06:59:11.999387+00:00",
+      "level": "error",
+      "message": "运动未在期限内完成；请切断电机电源并检查"
+    },
+    {
+      "time": "2026-11-11T06:59:22.869607+00:00",
+      "level": "info",
+      "message": "ID1 已按当前尺量位置 100.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T06:59:24.824912+00:00",
+      "level": "info",
+      "message": "ID2 已按当前尺量位置 82.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T06:59:26.438351+00:00",
+      "level": "info",
+      "message": "ID3 已按当前尺量位置 66.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T06:59:35.138109+00:00",
+      "level": "info",
+      "message": "长轴：目标 100.5 mm，速度 12 rpm。"
+    },
+    {
+      "time": "2026-11-11T06:59:41.524745+00:00",
+      "level": "error",
+      "message": "运动未在期限内完成；请切断电机电源并检查"
+    },
+    {
+      "time": "2026-11-11T07:00:02.009176+00:00",
+      "level": "info",
+      "message": "ID1 已按当前尺量位置 100.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T07:00:02.791687+00:00",
+      "level": "info",
+      "message": "ID2 已按当前尺量位置 82.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T07:00:04.368300+00:00",
+      "level": "info",
+      "message": "ID3 已按当前尺量位置 66.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T07:00:11.210202+00:00",
+      "level": "info",
+      "message": "长轴：目标 110.0 mm，速度 12 rpm。"
+    },
+    {
+      "time": "2026-11-11T07:00:34.562853+00:00",
+      "level": "info",
+      "message": "长轴到位，编码器换算位置约 110.00 mm。"
+    },
+    {
+      "time": "2026-11-11T07:21:12.529009+00:00",
+      "level": "warning",
+      "message": "已请求停止：当前有限小段结束后，不再发送后续运动。"
+    },
+    {
+      "time": "2026-11-11T07:21:17.192221+00:00",
+      "level": "warning",
+      "message": "控制页面心跳中断，取消后续运动并锁定；重新确认位置后才能操作。"
+    },
+    {
+      "time": "2026-11-11T07:23:24.927960+00:00",
+      "level": "info",
+      "message": "机号与长短轴对应已确认。"
+    },
+    {
+      "time": "2026-11-11T07:23:38.577804+00:00",
+      "level": "info",
+      "message": "ID1 已按当前尺量位置 110.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T07:24:05.808105+00:00",
+      "level": "info",
+      "message": "ID2 已按当前尺量位置 110.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T07:24:12.457560+00:00",
+      "level": "info",
+      "message": "ID3 已按当前尺量位置 95.0 mm 建立基准。"
+    },
+    {
+      "time": "2026-11-11T07:24:28.805342+00:00",
+      "level": "info",
+      "message": "已启动三轴连续复位，速度30 rpm；各轴整段移动至目标。"
+    },
+    {
+      "time": "2026-11-11T07:25:04.216513+00:00",
+      "level": "info",
+      "message": "三轴连续复位完成。"
+    },
+    {
+      "time": "2026-11-11T07:25:20.469048+00:00",
+      "level": "warning",
+      "message": "已请求停止：当前有限小段结束后，不再发送后续运动。"
+    },
+    {
+      "time": "2026-11-11T07:25:25.253078+00:00",
+      "level": "warning",
+      "message": "控制页面心跳中断，取消后续运动并锁定；重新确认位置后才能操作。"
+    }
+  ],
+  "busy": false,
+  "pending": null
+}

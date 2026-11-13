@@ -43,6 +43,7 @@ class Calibration:
     created: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%S%z"))
     note: str = ""
     frame_width: int | None = None
+    verification: dict | None = None
 
     # ------------------------------------------------------------------ fit
     @classmethod
@@ -165,6 +166,7 @@ class Calibration:
             "coefficients": [float(c) for c in self.coefficients],
             "r_squared": self.r_squared,
             "calibration_id": self.calibration_id,
+            "verification": self.verification,
         }
 
     @classmethod
@@ -182,6 +184,7 @@ class Calibration:
             r_squared=float(data["r_squared"]) if data.get("r_squared") is not None else None,
             created=str(data.get("created", "")),
             note=str(data.get("note", "")),
+            verification=data.get("verification"),
             frame_width=int(data["frame_width"]) if data.get("frame_width") is not None else None,
         )
 

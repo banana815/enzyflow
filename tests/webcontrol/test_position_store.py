@@ -1,0 +1,44 @@
+import tempfile
+from pathlib import Path
+import unittest
+from unittest.mock import patch
+import test_controller as fixtures
+from webcontrol.controller import Controller, APIError
+from webcontrol.position_store import read
+
+class PositionTests(fixtures.ControllerTests):
+    # Use the existing motion/session regressions with disk persistence as well.
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.c.position_path = Path(self.tmp.name)/'positions.json'
+    def tearDown(self):
+        super().tearDown()
+        self.tmp.cleanup()
+    def test_completed_position_survives_reconnect_without_motion(self):
+        self.ready()
+        self.post('move',axis=1,target_mm=55,rpm=12);self.run_job()
+        saved=read(self.c.position_path)
+        self.assertTrue(saved['reliable']);self.assertEqual(saved['axes'][0]['position_mm'],55)
+        calls=len(self.jogs())
+        self.post('disconnect');self.c.step();self.post('connect');self.c.step()
+        self.post('restore_positions');self.c.step()
+        self.assertEqual(self.c.snapshot()['axes'][0]['position_mm'],55)
+        self.assertEqual(len(self.jogs()),calls)
+    def test_crash_marker_blocks_stale_position_restore(self):
+        self.ready()
+        self.post('move',axis=1,target_mm=60,rpm=12);self.c.step()
+        self.assertFalse(read(self.c.position_path)['reliable'])
+        with self.assertRaises(APIError):
+            self.post('restore_positions')
+    def test_position_write_failure_prevents_motion(self):
+        self.ready()
+        self.post('move',axis=1,target_mm=60,rpm=12)
+        with patch('webcontrol.position_store.write',side_effect=OSError('disk full')):
+            self.c.step()
+        self.assertEqual(self.jogs(),[])
+    def test_completed_positions_loaded_after_server_restart(self):
+        self.ready()
+        c=Controller(lambda:self.transport,log_path=self.c.position_path.with_name('events.jsonl'),autostart=False)
+        self.assertEqual(c.snapshot()['saved_positions']['axes'][0]['position_mm'],51)
+        c.close()

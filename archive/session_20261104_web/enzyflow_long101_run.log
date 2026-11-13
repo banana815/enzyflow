@@ -1,0 +1,8 @@
+TEST10_BATCH {'state': 'ready_for_batches', 'feedback_mm': 78.01227, 'start_mm': 51.0, 'step_attempts': 27, 'encoders': {1: -336416, 2: 17076, 3: -9775}, 'selected_id': 1, 'all_locked': False, 'target_mm': 101.0, 'displacement_mm': 27.012268}
+
+Traceback (most recent call last):
+  File "/home/orange/Work/enzyflow/tools/board_tool.py", line 91, in <module>
+    if __name__=='__main__': main()
+  File "/home/orange/Work/enzyflow/tools/board_tool.py", line 22, in main
+    os.kill(pid, signal.SIGSTOP)
+ProcessLookupError: [Errno 3] No such process

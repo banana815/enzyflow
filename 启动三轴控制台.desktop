@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Enzyflow 三轴控制台
+Comment=连接 ESP32，控制三根丝杆的位置与速度
+Exec=/home/orange/Work/enzyflow/start-control.sh
+Path=/home/orange/Work/enzyflow
+Icon=/home/orange/Work/enzyflow/webcontrol/static/icon.svg
+Terminal=false
+Categories=Science;
+StartupNotify=false

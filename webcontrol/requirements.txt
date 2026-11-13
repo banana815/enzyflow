@@ -1,0 +1,3 @@
+# Install both independent services; each can also be installed separately.
+-r requirements-motor.txt
+-r requirements-spectrometer.txt

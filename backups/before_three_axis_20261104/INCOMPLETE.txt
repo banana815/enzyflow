@@ -1,0 +1,2 @@
+This backup was interrupted by a serial-access conflict. Do not restore from it.
+Use ../before_three_axis_20261104_complete/ with manifest.json instead.

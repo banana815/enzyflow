@@ -1,11 +1,14 @@
 """Use Thonny's Python: board_tool.py backup DEST | exec CODEFILE | deploy DIR."""
-import os, sys, signal, time, subprocess, json, hashlib
+import os, sys, signal, time, subprocess, json, hashlib, fcntl
 from pathlib import Path
 import serial
 from thonny.common import ImmediateCommand, serialize_message
 
 
 def main():
+    # One maintenance operation at a time, before touching the Thonny backend.
+    lock = open('/tmp/enzyflow-board-tool.lock', 'w')
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     pids = subprocess.check_output(['pgrep','-f','[e]sp_back.py'], text=True).split()
     if len(pids) != 1:
         raise RuntimeError('Expected exactly one Thonny ESP backend')
@@ -73,7 +76,16 @@ def main():
                 print('VERIFIED',path,expected[:12],flush=True)
         else:raise ValueError(action)
     finally:
-        if s:s.close()
-        os.kill(pid,signal.SIGCONT)
+        try:
+            if s:
+                try:
+                    s.write(b'\x02')  # return to friendly REPL before handing back
+                finally:
+                    s.close()
+        finally:
+            try:
+                os.kill(pid,signal.SIGCONT)
+            except ProcessLookupError:
+                pass
 
 if __name__=='__main__': main()
