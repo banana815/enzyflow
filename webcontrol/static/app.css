@@ -1447,3 +1447,16 @@ h1 {
 #sp-ratio-chart { display:block; width:100%; max-width:1000px; height:auto; margin-top:12px; background:#101b24; border-radius:10px; }
 #sp-archive { display:grid; max-height:320px; overflow:auto; }
 #sp-archive a, #sp-file-directory { overflow-wrap:anywhere; }
+
+.sp-actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+.sp-preview-axes { display:grid; grid-template-columns:clamp(58px, 7vw, 96px) minmax(0,1fr); gap:8px 10px; align-self:start; min-width:0; }
+.sp-roi-y { display:flex; flex-direction:column; justify-content:space-between; gap:8px; }
+.sp-roi-x { grid-column:2; display:flex; justify-content:space-between; gap:8px; }
+.sp-roi-x label { width:min(105px, 48%); }
+.sp-roi-y label,.sp-roi-x label { min-width:0; }
+.sp-roi-y input,.sp-roi-x input { width:100%; min-width:0; padding:6px; }
+.sp-roi-submit { grid-column:2; }
+.sp-preview-wrap { position:relative; }
+#sp-preview { touch-action:none; cursor:crosshair; }
+#sp-roi-drag { position:absolute; pointer-events:none; border:2px solid #73e5c2; background:#55d6bd24; }
+#sp-roi-drag[hidden] { display:none; }

@@ -1,16 +1,17 @@
 """USB separation and camera lifecycle; no real devices are opened."""
+from contextlib import ExitStack
 import json
 from pathlib import Path
 import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT))
-from webcontrol.spectrometer import Spectrometer, eligible, identity, select_camera
+from webcontrol.spectrometer import Spectrometer, eligible, identity, select_camera, windows_camera
 
 
 def device(path='/dev/video2', **kwargs):
@@ -26,10 +27,11 @@ class IdentityTests(unittest.TestCase):
             with self.assertRaises(ValueError):select_camera([d],identity(d))
 
     def test_renumber_uses_identity_and_ambiguity_fails(self):
-        original=device()
-        renamed=device('/dev/video6')
+        driver = 'directshow' if windows_camera else 'uvcvideo'
+        original = device(driver=driver)
+        renamed = device('/dev/video6', driver=driver)
         self.assertEqual(select_camera([renamed],identity(original)).path,'/dev/video6')
-        for devices in ([original,renamed],[device(by_id='different')],[]):
+        for devices in ([original,renamed],[device(driver=driver,by_id='different')],[]):
             with self.assertRaises(ValueError):select_camera(devices,identity(original))
 
 
@@ -145,11 +147,22 @@ class CameraWorkerTests(unittest.TestCase):
                 return {'auto_exposure':{'value':self.auto},'exposure_time_absolute':{'value':100}}
             def get_exposure(self):return 100
             def set_exposure(self,value):self.auto=1
-            def read(self):return np.full((720,1280,3),10,dtype=np.uint8)
+            def read(self):
+                if windows_camera:
+                    time.sleep(.03)
+                return np.full((720,1280,3),10,dtype=np.uint8)
         fake=FakeCamera()
-        d=DeviceInfo(path='/dev/video2',name='USB-ZH',vid_pid='0c68:6464',driver='uvcvideo')
         self.service.demo=False
-        with patch.object(camera,'enumerate_devices',return_value=[d]),patch.object(camera,'CameraSource',return_value=fake),patch('webcontrol.spectrometer.fcntl.flock'):
+        with ExitStack() as stack:
+            if windows_camera:
+                d=DeviceInfo(path='test-camera',name='USB-ZH',vid_pid='0c68:6464',driver='directshow',by_id='test-camera')
+                stack.enter_context(patch.object(windows_camera,'lock_camera',return_value=Mock()))
+            else:
+                d=DeviceInfo(path='/dev/video2',name='USB-ZH',vid_pid='0c68:6464',driver='uvcvideo')
+                stack.enter_context(patch('webcontrol.spectrometer.fcntl.flock'))
+            backend=windows_camera or camera
+            stack.enter_context(patch.object(backend,'enumerate_devices',return_value=[d]))
+            stack.enter_context(patch.object(backend,'CameraSource',return_value=fake))
             self.service.command({'op':'connect','device':identity(d)})
             self.wait(lambda s:s['connected'])
             self.assertEqual(fake.auto,1)
@@ -216,6 +229,35 @@ class CameraWorkerTests(unittest.TestCase):
                         'points':[[260,436],[810,546],[1130,610]]},lambda s:bool(s['error']))
             self.assertIn('失效',self.service.snapshot()['error'])
 
+    def test_can_save_lamp_calibration_before_dark(self):
+        import numpy as np
+        from spectrometer.spectro.camera import SyntheticSource
+
+        def lamp_frame(source):
+            x = np.arange(source.actual_width)
+            values = np.full(source.actual_width, 10.)
+            for pixel in (260, 810, 1130):
+                values += 120 * np.exp(-.5 * ((x - pixel) / 4) ** 2)
+            return np.broadcast_to(values.astype(np.uint8)[None, :, None],
+                                   (source.actual_height, source.actual_width, 3)).copy()
+
+        with patch.object(SyntheticSource,'read',lamp_frame):
+            self.start()
+            self.apply({'op':'roi','x':0,'y':354,'w':1280,'h':12},
+                       lambda s:s['record']['roi']['w']==1280)
+            self.apply({'op':'processing','average':32,'smooth':True,'hold':False},
+                       lambda s:s['processing']['buffer_size']==32)
+            self.wait(lambda s:s['record']['stats']['buffer_len']==32)
+            frozen = self.apply({'op':'lamp_capture','confirmed':True},lambda s:s['lamp'] is not None)
+            self.assertIsNone(frozen['lamp']['dark_id'])
+            saved = self.apply({'op':'peaks_save','snapshot_id':frozen['lamp']['id'],'degree':1,
+                                'points':[[260,436],[810,546],[1130,610]]},
+                               lambda s:s['record']['calibration'] is not None)
+            self.assertTrue(Path(saved['wavelength_calibration']['path']).is_file())
+            entry = next(item for item in saved['history'] if item['id']==saved['active_history'])
+            self.assertTrue(entry['roi'] and entry['peaks'])
+            self.assertFalse(entry['dark'])
+
     def test_saved_dark_and_settings_survive_new_service_without_recapture(self):
         import numpy as np
         from spectrometer.spectro.camera import SyntheticSource
@@ -269,21 +311,88 @@ class CameraWorkerTests(unittest.TestCase):
             self.start()
             self.apply({'op':'dark_start','frames':8,'confirmed':True},lambda s:s['dark']['status']=='collecting')
             self.wait(lambda s:s['dark']['status']=='ready')
+            level[0]=180
+            self.apply({'op':'processing','average':8,'smooth':False,'hold':False},lambda s:s['processing']['buffer_size']==8)
+            self.wait(lambda s:s['record']['stats']['buffer_len']==8 and s['record']['stats']['intensity_max']>169.9)
             level[0]=110
-            self.apply({'op':'processing','average':32,'smooth':False,'hold':False},lambda s:s['processing']['buffer_size']==32)
-            self.wait(lambda s:s['record']['stats']['buffer_len']==32 and s['record']['stats']['intensity_max']>99.9)
-            self.apply({'op':'halogen_capture','confirmed':True},lambda s:s.get('halogen',{}).get('saved'))
-            ref=self.service.snapshot()['halogen']['id']
+            self.apply({'op':'halogen_capture','confirmed':True},lambda s:(s.get('halogen_capture') or {}).get('status')=='collecting')
+            s=self.wait(lambda s:s.get('halogen',{}).get('saved'))
+            ref=s['halogen']['id']
+            self.assertEqual(s['halogen']['frames'],32)
+            self.assertEqual(s['processing']['buffer_size'],8)
+            reference=json.loads((Path(self.tmp.name)/'demo-halogen-reference.json').read_text())
+            self.assertAlmostEqual(reference['record']['intensity'][0],100)
+            self.assertEqual(reference['record']['stats']['buffer_len'],32)
             level[0]=60
             self.wait(lambda s:s['record']['photometry']['active'] and abs(s['record']['photometry']['transmittance'][0]-.5)<1e-5)
             self.apply({'op':'save'},lambda s:bool(s['files']))
             data=json.loads(next(p for p in self.service.exports.values() if p.parent.name=='captures' and p.suffix=='.json').read_text())
             self.assertAlmostEqual(data['photometry']['transmittance'][0],.5)
+            self.apply({'op':'absorbance_save','name':'BTB_pH7.00'},lambda s:bool(s.get('absorbance_capture')))
+            saved=self.service.snapshot()['absorbance_capture']
+            self.assertEqual(saved['name'],'BTB_pH7.00')
+            capture=json.loads((Path(self.tmp.name)/'captures/BTB_pH7.00.json').read_text(encoding='utf8'))
+            self.assertAlmostEqual(capture['record']['photometry']['absorbance'][0],.30103,places=5)
+            self.assertEqual(capture['reference']['id'],ref)
+            self.assertEqual(capture['record']['seq'],saved['seq'])
+            self.apply({'op':'saturation_settings','block':True,'threshold':50},lambda s:s['record']['stats']['saturated'] and not s['record']['photometry']['active'])
+            self.apply({'op':'saturation_settings','block':False,'threshold':50},lambda s:s['record']['photometry']['active'])
+            self.assertEqual(self.service.snapshot()['halogen']['id'],ref)
+            self.apply({'op':'absorbance_save','name':'allowed_saturation'},lambda s:s.get('absorbance_capture',{}).get('name')=='allowed_saturation')
+            exported=json.loads((Path(self.tmp.name)/'captures/allowed_saturation.json').read_text())
+            self.assertTrue(exported['record']['stats']['saturated'])
+            self.assertFalse(exported['record']['saturation']['block'])
+            self.apply({'op':'saturation_settings','block':True,'threshold':200},lambda s:s['record']['photometry']['active'] and not s['record']['stats']['saturated'])
+
+
             self.service.close()
             self.service=Spectrometer(demo=True,data_dir=self.tmp.name)
             s=self.start()
             self.assertEqual(s['halogen']['id'],ref)
             self.assertTrue(s['record']['photometry']['active'])
+
+    def test_blank_uses_loaded_dark_with_unsaved_range(self):
+        import numpy as np
+        from spectrometer.spectro.camera import SyntheticSource
+
+        level = [10]
+        def frame(source):
+            return np.full((720,1280,3),level[0],dtype=np.uint8)
+
+        with patch.object(SyntheticSource,'read',frame):
+            self.start()
+            self.apply({'op':'dark_start','frames':8,'full_frame':True,'confirmed':True},
+                       lambda s:s['dark']['status']=='collecting')
+            self.wait(lambda s:s['dark']['status']=='ready')
+            level[0] = 110
+            first = self.apply({'op':'halogen_capture','confirmed':True},
+                               lambda s:s.get('halogen',{}).get('active'))
+            self.assertTrue(first['dark']['savable'])
+            initial_reference = first['halogen']['id']
+            saved = self.apply({'op':'dark_save'},lambda s:s.get('active_history') is not None)
+            key = saved['active_history']
+            self.assertEqual(saved['halogen']['id'],initial_reference)
+            archive = Path(self.tmp.name)/'demo-calibrations'/(key+'.json')
+            original = archive.read_bytes()
+
+            changed = {'x':100,'y':355,'w':700,'h':8}
+            def set_draft():
+                self.apply({'op':'roi','draft':True,**changed},lambda s:s['record']['roi']==changed)
+
+            self.apply({'op':'history_load','id':key},lambda s:s.get('active_history')==key)
+            set_draft()
+            self.assertTrue(self.service.snapshot()['record']['stats']['dark_corrected'])
+            updated = self.apply({'op':'halogen_capture','confirmed':True},
+                                 lambda s:s.get('halogen',{}).get('active'))
+            new_reference = updated['halogen']['id']
+            self.assertNotEqual(new_reference,initial_reference)
+            self.assertEqual(archive.read_bytes(),original)
+            self.apply({'op':'history_load','id':key},lambda s:s['halogen'].get('id')==initial_reference)
+            set_draft()
+            self.assertEqual(self.service.snapshot()['halogen']['id'],new_reference)
+            self.apply({'op':'absorbance_save','name':'draft_roi'},lambda s:s.get('absorbance_capture') is not None)
+            exported = json.loads((Path(self.tmp.name)/'captures/draft_roi.json').read_text())
+            self.assertEqual(exported['reference']['id'],new_reference)
 
     def test_invalid_settings_do_not_kill_capture(self):
         self.start()

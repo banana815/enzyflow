@@ -8,14 +8,22 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime
-import fcntl
 import json
 from pathlib import Path
 import queue
 import re
+import sys
 import threading
 import time
 import uuid
+from urllib.parse import quote
+from . import saturation
+
+if sys.platform == 'win32':
+    from . import windows_camera
+else:
+    import fcntl
+    windows_camera = None
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / 'spectrometer/runtime/web'
@@ -31,6 +39,9 @@ def modules():
 
 
 def eligible(device):
+    if windows_camera:
+        return (device.capture and device.vid_pid.lower() == USB_ID
+                and device.driver == 'directshow' and bool(device.by_id))
     return (device.capture and device.vid_pid.lower() == USB_ID
             and re.fullmatch(r'/dev/video\d+', device.path) is not None
             and device.driver == 'uvcvideo')
@@ -59,12 +70,19 @@ class Spectrometer:
         self.exports = {}
         self.state = dict(status='disconnected', connected=False, demo=demo,
                           device=None, record=None, profile=None, lamp=None, calibration_report=None, dark={'status':'none','message':'尚未采集暗场'}, error=None, message='光谱仪未连接', files={})
+        self.saturation_path = self.data_dir / ('demo-saturation.json' if demo else 'saturation.json')
+        try:
+            self.saturation_policy = saturation.load(self.saturation_path)
+        except (ValueError, OSError):
+            self.saturation_policy = dict(saturation.DEFAULT)
+            self.state['error'] = '饱和设置文件无效，已恢复默认（仅提示、不拦截）'
+        self.state['saturation'] = dict(self.saturation_policy)
         self.refresh_files()
         # Show saved calibration even before connecting; applying it still checks binding.
         cal_path = self.data_dir / ('demo-calibration.json' if demo else 'calibration.json')
         if cal_path.exists():
             try:
-                stored = json.loads(cal_path.read_text())
+                stored = json.loads(cal_path.read_text(encoding='utf-8'))
                 self.state.update(calibration_report=stored.get('report'), saved_lamp=stored.get('lamp'),
                     wavelength_calibration={'saved':True,'path':str(cal_path),'id':stored['calibration'].get('calibration_id')})
             except (OSError, ValueError, KeyError, TypeError):
@@ -75,7 +93,7 @@ class Spectrometer:
         paths += [self.data_dir/n for n in ('calibration.json','demo-calibration.json','halogen-reference.json','demo-halogen-reference.json')]
         with self.lock:
             self.exports = {p.name:p for p in paths if p.is_file() and not p.is_symlink() and p.suffix in ('.json','.jsonl','.csv','.png')}
-            self.state['archive'] = [{'name':p.name, 'url':'/api/spectrometer-file/'+p.name, 'bytes':p.stat().st_size} for p in self.exports.values()]
+            self.state['archive'] = [{'name':p.name, 'url':'/api/spectrometer-file/'+quote(p.name), 'bytes':p.stat().st_size} for p in self.exports.values()]
             self.state['capture_directory'] = str((self.data_dir/'captures').resolve())
 
     def snapshot(self):
@@ -89,8 +107,10 @@ class Spectrometer:
     def devices(self):
         if self.demo:
             return [dict(path='synthetic', name='合成光谱（演示）', vid_pid='demo', by_id='synthetic', eligible=True)]
-        camera = modules()[0]
-        return [dict(d.to_dict(), eligible=eligible(d)) for d in camera.enumerate_devices()]
+        camera = windows_camera or modules()[0]
+        return [dict(d.to_dict(), eligible=eligible(d),
+                     capture_modes=list(windows_camera.CAPTURE_MODES) if windows_camera and eligible(d) else [])
+                for d in camera.enumerate_devices()]
 
     def command(self, body):
         if type(body) is not dict:
@@ -102,18 +122,24 @@ class Spectrometer:
                     raise ValueError('光谱仪已连接或尚未结束，请等待断开完成')
                 if not self.demo and type(body.get('device')) is not dict:
                     raise ValueError('请先扫描并选择光谱仪')
+                capture_mode = body.get('capture_mode')
+                if capture_mode is not None and not (windows_camera and not self.demo and
+                        isinstance(capture_mode, str) and capture_mode in windows_camera.CAPTURE_MODES):
+                    raise ValueError('无效的光谱仪采集模式')
                 self.stop_event.clear()
                 self.commands = queue.Queue(maxsize=16)
                 self.preview = None
-                self.state.update(status='connecting', connected=False, record=None, frame_time=None, recording=False, roi_selection=None, profile=None, lamp=None, saved_lamp=None, wavelength_calibration=None, halogen=None, calibration_report=None, dark={'status':'none','message':'正在检查已保存的校准'}, error=None, files={}, message='正在核对光谱仪身份')
-                self.thread = threading.Thread(target=self._run, args=(body.get('device'),), daemon=True, name='uvc-spectrometer')
+                self.state.update(status='connecting', connected=False, record=None, frame_time=None, recording=False, roi_selection=None, profile=None, lamp=None, saved_lamp=None, wavelength_calibration=None, halogen=None, halogen_capture=None, calibration_report=None, dark={'status':'none','message':'正在检查已保存的校准'}, error=None, files={}, message='正在核对光谱仪身份')
+                self.thread = threading.Thread(target=self._run, args=(body.get('device'), body.get('guided') is True, capture_mode), daemon=True, name='uvc-spectrometer')
                 self.thread.start()
         elif op == 'disconnect':
             self.stop_event.set()
             with self.lock:
                 if self.thread and self.thread.is_alive():
                     self.state.update(status='stopping', message='正在释放光谱仪')
-        elif op in {'roi', 'auto_roi', 'processing', 'zero', 'clear_zero', 'exposure', 'calibrate', 'clear_calibration', 'save', 'record_start', 'record_stop', 'dark_start', 'dark_clear', 'lamp_capture', 'lamp_calibrate', 'profile_restore', 'halogen_capture'}:
+        elif op in {'roi', 'auto_roi', 'processing', 'zero', 'clear_zero', 'exposure', 'calibrate', 'clear_calibration', 'save', 'absorbance_save', 'saturation_settings', 'record_start', 'record_stop', 'dark_start', 'dark_clear', 'dark_save', 'dark_reset',
+                    'history_load', 'history_roi', 'history_peaks', 'roi_save', 'roi_reset',
+                    'peaks_save', 'peaks_reset', 'exposure_auto', 'lamp_capture', 'lamp_calibrate', 'profile_restore', 'halogen_capture'}:
             with self.lock:
                 if (not self.state['connected'] or self.stop_event.is_set() or
                     time.monotonic()-self.state.get('frame_time',0)>3):
@@ -135,13 +161,23 @@ class Spectrometer:
         with self.lock:
             self.state.update(values)
 
-    def _run(self, selected):
+    def _run(self, selected, guided=False, capture_mode=None):
         source = guard = None
         try:
             camera, calibration, config, roi, spectrum, recording, cv2, np = modules()
+            calibration_dir = self.data_dir
+            windows_capture = bool(windows_camera and not self.demo)
             if self.demo:
                 source = camera.SyntheticSource()
                 device_info = dict(source.info, name='合成光谱（演示）', vid_pid='demo', by_id='synthetic')
+            elif windows_camera:
+                guard = windows_camera.lock_camera()
+                device = select_camera(windows_camera.enumerate_devices(), selected)
+                capture_mode = capture_mode or windows_camera.LEGACY_CAPTURE_MODE
+                source = windows_camera.CameraSource(device, capture_mode)
+                if capture_mode != windows_camera.LEGACY_CAPTURE_MODE:
+                    calibration_dir = self.data_dir / capture_mode
+                device_info = dict(source.info, **identity(device), node=device.path)
             else:
                 device = select_camera(camera.enumerate_devices(), selected)
                 # Cross-process lock distinct from the ESP32 lock.
@@ -157,29 +193,35 @@ class Spectrometer:
             processor = spectrum.SpectrumProcessor(processing)
             region = cal = lamp = halogen = saved_lamp = None
             from .signal_roi import SignalRoiFinder
-            roi_finder = SignalRoiFinder()
+            roi_finder = None if guided else SignalRoiFinder()
             roi_ready = False
+            auto_roi_draft = False
             seq = 0
             recording_path = None
             record_interval, record_at = 1.0, 0.0
-            exposure = {'auto': None, 'value': None, 'units': 'V4L2 exposure_time_absolute (100 us)'}
+            exposure = {'auto': None, 'value': None, 'units': getattr(source, 'exposure_units', 'V4L2 exposure_time_absolute (100 us)')}
             if not self.demo:
                 controls = source.controls()
+                limits = controls.get('exposure_time_absolute', {})
+                exposure['min'] = max(1, limits.get('min', 1))
+                exposure['max'] = min(5000, limits.get('max', 5000))
+                exposure['default'] = max(exposure['min'], min(exposure['max'], limits.get('default', 300)))
                 exposure.update(value=source.get_exposure(), auto=controls.get('auto_exposure', {}).get('value') == 3)
             binding = {k: device_info.get(k) for k in ('vid_pid', 'by_id', 'name', 'width', 'height')}
-            cal_path = self.data_dir / ('demo-calibration.json' if self.demo else 'calibration.json')
+            cal_path = calibration_dir / ('demo-calibration.json' if self.demo else 'calibration.json')
             if cal_path.exists():
-                saved = json.loads(cal_path.read_text())
+                saved = json.loads(cal_path.read_text(encoding='utf-8'))
                 if saved.get('binding') == binding:
                     cal = calibration.Calibration.from_dict(saved['calibration'])
                     saved_lamp = saved.get('lamp')
                     self._update(calibration_report=saved.get('report'), wavelength_calibration={'saved':True,'path':str(cal_path),'id':cal.calibration_id}, saved_lamp=saved_lamp)
-            halogen_path = self.data_dir / ('demo-halogen-reference.json' if self.demo else 'halogen-reference.json')
+            halogen_path = calibration_dir / ('demo-halogen-reference.json' if self.demo else 'halogen-reference.json')
+            standalone_halogen = None
             if halogen_path.exists():
                 try:
-                    candidate = json.loads(halogen_path.read_text())
+                    candidate = json.loads(halogen_path.read_text(encoding='utf-8'))
                     if candidate['schema']==1 and candidate['binding']==binding:
-                        halogen = candidate
+                        standalone_halogen = candidate
                 except (ValueError, KeyError, TypeError):
                     self._update(error='保存的卤素灯参考文件无效')
             self._update(device=device_info, message='已连接；请核对预览中的光谱带', error=None)
@@ -198,10 +240,85 @@ class Spectrometer:
                 processor.clear_dark_reference()
                 self._update(dark={'status':'none','message':message}, lamp=None)
 
+            from .halogen_reference import BLANK_FRAMES, capture as capture_blank, compare, matches as reference_matches
             from .instrument_profile import read_profile, write_profile, dark_matches, restore_controls
-            profile_path = self.data_dir / ('demo-instrument-profile.json' if self.demo else 'instrument-profile.json')
+            profile_path = calibration_dir / ('demo-instrument-profile.json' if self.demo else 'instrument-profile.json')
             profile = {'schema':1,'binding':binding,'settings':None,'dark':None}
-            initial_save = not profile_path.exists()
+            initial_save = not guided and not profile_path.exists()
+            from .calibration_history import CalibrationHistory, encode_dark, decode_dark
+            history = CalibrationHistory(calibration_dir, binding, self.demo)
+            history_key = None
+            working_dark = None
+            dark_pending = False
+            dark_reset = False
+            decoded_dark = None
+
+            def refresh_history():
+                self._update(history=history.scan(), active_history=history_key)
+
+            def apply_wave(wave):
+                nonlocal cal, lamp, saved_lamp
+                candidate = calibration.Calibration.from_dict(wave['calibration']) if wave else None
+                if candidate:
+                    axis = candidate.wavelengths(0,binding['width'])
+                    delta = np.diff(axis)
+                    if not np.all(np.isfinite(axis)) or not (np.all(delta>0) or np.all(delta<0)):
+                        raise ValueError('保存的波长标定在当前画面内无效')
+                cal, lamp = candidate, None
+                saved_lamp = wave.get('lamp') if wave else None
+                self._update(lamp=None, saved_lamp=saved_lamp,
+                    calibration_report=wave.get('report') if wave else None,
+                    wavelength_calibration={'saved':cal is not None,'id':cal.calibration_id if cal else None})
+
+            def archive_stage(stage, wave=None, reference=None):
+                nonlocal history_key
+                if stage == 'dark':
+                    wave = dict(binding=binding,calibration=cal.to_dict(),
+                                report=cal.verification,lamp=saved_lamp) if cal else None
+                    data = dict(schema=1,binding=binding,settings=settings_now(),dark=working_dark,
+                                roi_saved=roi_ready and roi_finder is None,wavelength=wave,reference=reference)
+                    key = None
+                elif stage == 'peaks' and history_key is None:
+                    data = dict(schema=1,binding=binding,settings=settings_now(),dark=None,
+                                roi_saved=True,wavelength=wave,reference=None)
+                    key = None
+                else:
+                    if history_key is None:
+                        raise ValueError('请先保存暗场或选择一份已有校正记录')
+                    data = history.read(history_key)
+                    key = history_key
+                    if stage == 'roi':
+                        if not roi_ready or roi_finder is not None:
+                            raise ValueError('请先确定采样范围')
+                        if data['dark'] and not dark_matches(data['dark'],binding,settings_now()['roi'],vars(processing),hardware_controls()):
+                            raise ValueError('当前曝光或采样范围与保存的暗场不匹配')
+                        if data['settings']['roi'] != settings_now()['roi']:
+                            data.update(wavelength=None, reference=None)
+                        data.update(settings=settings_now(),roi_saved=True)
+                    elif stage == 'peaks':
+                        if not data.get('roi_saved') or data['settings']['roi'] != settings_now()['roi']:
+                            raise ValueError('请先保存当前范围')
+                        data['wavelength'] = wave
+                    elif stage == 'reference':
+                        if data.get('roi_saved') and data['settings']['roi'] == settings_now()['roi']:
+                            data['reference'] = reference
+                        else:
+                            raise ValueError('请先保存当前采样范围')
+                history_key, name = history.save(data,key)
+                refresh_history()
+                self._update(history_message='已保存 ' + name)
+                return history.directory / name
+
+            def set_region(candidate, message):
+                nonlocal region, processor, roi_finder, roi_ready
+                if candidate != region:
+                    region = candidate
+                    invalidate_dark('采样范围已改变，正在检查暗场兼容性')
+                    processor = spectrum.SpectrumProcessor(processing)
+                roi_finder = None
+                roi_ready = True
+                self._update(roi_selection={'ready':True,'scanning':False,'message':message})
+                activate_saved_dark()
 
             def settings_now():
                 return {'roi':dict(zip(('x','y','w','h'),region.as_tuple())),
@@ -220,19 +337,40 @@ class Spectrometer:
 
             def activate_saved_dark():
                 nonlocal dark_controls
-                if dark_matches(profile.get('dark'),binding,
-                        dict(zip(('x','y','w','h'),region.as_tuple())),vars(processing),hardware_controls()):
-                    d=profile['dark']; m=d['metadata']
-                    processor.set_dark_reference(d['background'],m,region.x)
-                    dark_controls=copy.deepcopy(m['controls'])
-                    self._update(dark={'status':'ready','count':m['frames'],'total':m['frames'],
-                        'metadata':m,'message':'已恢复保存的暗场校正，无需重新遮光采集'})
+                nonlocal decoded_dark
+                d = working_dark if working_dark is not None else (None if dark_reset else profile.get('dark'))
+                current_roi = dict(zip(('x','y','w','h'),region.as_tuple()))
+                if dark_matches(d,binding,current_roi,vars(processing),hardware_controls()):
+                    metadata = copy.deepcopy(d['metadata'])
+                    background = d['background']
+                    if d.get('image'):
+                        if decoded_dark is None or decoded_dark[0] != metadata['id']:
+                            decoded_dark = (metadata['id'], decode_dark(d,binding))
+                        mean, deviation = (region.crop(array) for array in decoded_dark[1])
+                        background = mean.mean(axis=0)
+                        metadata.update(mean_counts=float(mean.mean()), max_counts=float(mean.max()),
+                                        temporal_std_mean=float(deviation.mean()))
+                    processor.set_dark_reference(background,metadata,region.x)
+                    dark_controls=copy.deepcopy(metadata['controls'])
+                    self._update(dark={'status':'ready','count':metadata['frames'],'total':metadata['frames'],
+                        'metadata':metadata,'savable':dark_pending,
+                        'message':'已应用匹配的暗场'})
                     return True
+                if d:
+                    legacy_roi = d['metadata']['roi']
+                    if not d.get('image') and legacy_roi != current_roi:
+                        message = ('旧暗场只覆盖 x={x}, y={y} 的 {w} × {h} 像素区域。'
+                                   '请保持当前采样范围，遮光重采暗场。').format(**legacy_roi)
+                    else:
+                        message = '保存的暗场与当前曝光或处理设置不匹配。请恢复原设置，或遮光重采暗场。'
+                    self._update(dark={'status':'none','message':message})
                 return False
 
-            def restore_profile(use_dark_settings=False):
+            def restore_profile(use_dark_settings=False, saved=None):
+                archived = saved is not None
                 nonlocal profile, processing, processor, region, lamp, dark_job, dark_controls, roi_finder, roi_ready
-                saved=read_profile(profile_path,binding)
+                if saved is None:
+                    saved=read_profile(profile_path,binding)
                 if saved is None:
                     raise ValueError('尚无保存的光谱仪配置，请先完成一次校准')
                 settings=(saved['dark']['metadata'] if use_dark_settings and saved.get('dark') else saved['settings'])
@@ -241,21 +379,22 @@ class Spectrometer:
                     desired['auto_exposure'] = 1
                     desired['exposure_time_absolute'] = desired.get('exposure_time_absolute') or 300
                     restore_controls(source,desired)
-                profile=saved
+                if not archived:
+                    profile = saved
                 processing=config.ProcessingConfig(**settings['processing'])
                 processor=spectrum.SpectrumProcessor(processing)
                 region=roi.Roi(**settings['roi'])
                 roi_finder = None
-                roi_ready = True
-                self._update(roi_selection={'ready':True,'scanning':False,'message':'已恢复保存的光谱范围；光路不变时无需重新识别'})
+                roi_ready = not archived or saved.get('roi_saved',False)
+                self._update(roi_selection={'ready':roi_ready,'scanning':False,'message':
+                    '已恢复保存的采样范围' if roi_ready else '请自动识别或在预览中拖选'})
                 lamp=dark_job=dark_controls=None
                 measured=hardware_controls()
                 exposure.update(auto=measured.get('auto_exposure')==3,value=measured.get('exposure_time_absolute'))
                 self._update(lamp=None,profile={'saved':True,'dark_saved':saved.get('dark') is not None,
                     'path':str(profile_path),'message':'已恢复保存的ROI、曝光及处理设置'})
-                if not activate_saved_dark():
-                    self._update(dark={'status':'none','message':
-                        '底噪已保存，但当前参数不匹配；可点击“恢复校准时设置”' if saved.get('dark') else '尚未保存暗场，请采集一次'})
+                if not activate_saved_dark() and not saved.get('dark'):
+                    self._update(dark={'status':'none','message':'尚未保存暗场，请采集一次'})
 
             if profile_path.exists():
                 try:
@@ -264,6 +403,8 @@ class Spectrometer:
                     self._update(profile={'saved':True,'dark_saved':False,'path':str(profile_path),
                         'message':'保存的配置未应用：'+str(exc)},error='校准配置恢复失败：'+str(exc))
 
+            self._update(history_message='')
+            refresh_history()
             if not self.demo:
                 measured = hardware_controls()
                 if measured.get('auto_exposure') != 1:
@@ -274,12 +415,17 @@ class Spectrometer:
                 exposure.update(auto=False,value=measured.get('exposure_time_absolute'))
             else:
                 exposure.update(auto=False,value=100)
+            if guided and not roi_ready:
+                self._update(roi_selection={'ready':False,'scanning':False,'message':'请自动识别或在预览中拖选'})
             if roi_finder is not None:
                 self._update(roi_selection={'ready':False,'scanning':True,'message':'正在平均8帧识别全部光信号；首次请接入完整的卤素灯光谱'})
             last_frame = result = None
+            preview_at = 0.0
             photometry = None
+            halogen_job = frame_reference = None
             while not self.stop_event.is_set():
                 completed_dark = None
+                auto_message = None
                 # Apply settings in the camera's owning thread only.
                 try:
                     command = self.commands.get_nowait()
@@ -288,12 +434,26 @@ class Spectrometer:
                 if command:
                     try:
                         op = command['op']
-                        if roi_finder is not None and op in ('lamp_capture','lamp_calibrate','halogen_capture','save'):
-                            raise ValueError('请等待光谱范围识别完成后再采集参考或标定')
-                        if dark_job is not None and op not in ('dark_clear','record_stop'):
+                        if halogen_job is not None:
+                            raise ValueError('正在采集空白 I₀，请等待采集完成')
+                        if not roi_ready or roi_finder is not None:
+                            if op in ('lamp_capture','lamp_calibrate','peaks_save','halogen_capture','save','absorbance_save'):
+                                raise ValueError('请先选择采样范围，再采集灯谱或参考')
+                        if recording_path is not None and op in {
+                            'exposure_auto','exposure','dark_reset','history_load','history_roi',
+                            'history_peaks','roi_reset','peaks_reset','peaks_save','halogen_capture'
+                        }:
+                            raise ValueError('请先结束连续记录')
+                        if dark_job is not None and op not in ('dark_clear','dark_reset','record_stop'):
                             raise ValueError('正在采集暗场，请保持遮光；完成或取消后再操作')
-                        if op == 'dark_start':
-                            if not roi_ready or roi_finder is not None:
+                        if op == 'saturation_settings':
+                            self.saturation_policy = saturation.save(self.saturation_path, command)
+                            self._update(saturation=dict(self.saturation_policy))
+                        elif op == 'dark_start':
+                            full = command.get('full_frame') is True
+                            if full and processing.linearize != 'off':
+                                raise ValueError('整幅暗场需要关闭软件线性化')
+                            if not full and (not roi_ready or roi_finder is not None):
                                 raise ValueError('请先打开入光口，等待自动识别光谱范围后再遮光采集暗场')
                             frames = command.get('frames',32)
                             if command.get('confirmed') is not True:
@@ -311,9 +471,60 @@ class Spectrometer:
                             sampler_config.buffer_size = 1
                             sampler_config.hold_peaks = sampler_config.savgol_enabled = False
                             dark_job = {'sampler':spectrum.SpectrumProcessor(sampler_config),
-                                        'total':frames,'count':0,'discard':3,'sum':None,'sum2':None}
+                                        'total':frames,'count':0,'discard':3,'sum':None,'sum2':None,'full':full}
                             check_controls_at = 0.0
                             self._update(dark={'status':'collecting','count':0,'total':frames,'message':'请保持遮光，正在丢弃3帧缓存'})
+                        elif op == 'dark_save':
+                            if not dark_pending or dark_controls is None:
+                                raise ValueError('请先采集匹配的新暗场')
+                            current_reference = frame_reference if reference_matches(frame_reference,record,binding,settings_now()) else None
+                            archive_stage('dark', reference=current_reference)
+                            dark_pending = False
+                            halogen = current_reference
+                            activate_saved_dark()
+                        elif op == 'dark_reset':
+                            working_dark = decoded_dark = None
+                            dark_pending = False
+                            dark_reset = True
+                            history_key = None
+                            invalidate_dark('当前暗场已重置，历史文件仍可选择')
+                            refresh_history()
+                            self._update(history_message='')
+                        elif op == 'history_load':
+                            chosen = command.get('id')
+                            saved = history.read(chosen)
+                            waveform = saved.get('wavelength')
+                            if saved.get('dark',{}) and saved['dark'].get('image'):
+                                decode_dark(saved['dark'],binding)
+                            history_key = chosen
+                            working_dark = saved.get('dark')
+                            dark_pending = False
+                            dark_reset = working_dark is None
+                            use_original_dark = chosen in history.legacy and not waveform and not saved.get('reference')
+                            restore_profile(use_dark_settings=use_original_dark,saved=saved)
+                            apply_wave(waveform)
+                            halogen = saved.get('reference')
+                            refresh_history()
+                            self._update(history_message='已载入所选校正记录'+
+                                         ('；暗场保存在文件中，但当前未应用' if working_dark and dark_controls is None else ''))
+                        elif op == 'history_roi':
+                            saved = history.read(command.get('id'))
+                            if not saved.get('roi_saved'):
+                                raise ValueError('该记录没有保存采样范围')
+                            set_region(roi.Roi(**saved['settings']['roi']), '已载入所选采样范围')
+                        elif op == 'roi_save':
+                            archive_stage('roi')
+                        elif op == 'roi_reset':
+                            set_region(roi.Roi(0,0,binding['width'],binding['height']), '范围已重置，请自动识别或在预览拖选')
+                            roi_ready = False
+                            self._update(roi_selection={'ready':False,'scanning':False,'message':'范围已重置，请自动识别或在预览拖选'})
+                        elif op == 'history_peaks':
+                            wave = history.read(command.get('id')).get('wavelength')
+                            if not wave:
+                                raise ValueError('该记录没有保存波长标定')
+                            apply_wave(wave)
+                        elif op == 'peaks_reset':
+                            apply_wave(None)
                         elif op == 'dark_clear':
                             cancelling = dark_job is not None
                             invalidate_dark('暗场已取消' if cancelling else '已清除保存的暗场；波长标定保留')
@@ -328,13 +539,13 @@ class Spectrometer:
                             if recording_path is not None:
                                 raise ValueError('请先结束记录再重新识别光谱范围')
                             if op == 'auto_roi':
+                                auto_roi_draft = command.get('draft') is True
                                 # Keep the old extraction and calibration until a
                                 # supported light signal is actually found.
                                 roi_finder = SignalRoiFinder()
                                 self._update(roi_selection={'ready':roi_ready,'scanning':True,
                                     'message':'正在平均8帧识别全部光信号；请使用完整的卤素灯光谱'})
                             else:
-                                # Compatibility for existing scripts; no manual ROI UI.
                                 vals = [command.get(k) for k in ('x', 'y', 'w', 'h')]
                                 if any(type(v) is not int for v in vals):
                                     raise ValueError('ROI 必须是整数像素')
@@ -343,15 +554,9 @@ class Spectrometer:
                                 if min(x,y)<0 or min(w,h)<1 or x+w>fw or y+h>fh:
                                     raise ValueError('ROI 超出当前图像范围')
                                 candidate = roi.Roi(*vals)
-                                if candidate != region:
-                                    region = candidate
-                                    invalidate_dark('光谱范围已改变，暂停底噪；可恢复校准时设置')
-                                    processor = spectrum.SpectrumProcessor(processing)
-                                roi_finder = None
-                                roi_ready = True
-                                self._update(roi_selection={'ready':True,'scanning':False,'message':'已设置光谱范围'})
-                                persist_profile()
-                                activate_saved_dark()
+                                set_region(candidate, '已设置采样范围')
+                                if command.get('draft') is not True:
+                                    persist_profile()
                         elif op == 'processing':
                             n = command.get('average', 8)
                             if type(n) is not int or not 1 <= n <= 100:
@@ -363,12 +568,30 @@ class Spectrometer:
                             processing.savgol_enabled = command['smooth']
                             processing.hold_peaks = command['hold']
                             processor = spectrum.SpectrumProcessor(processing)
-                            persist_profile()
+                            if not guided:
+                                persist_profile()
                             activate_saved_dark()
                         elif op == 'zero':
                             processor.set_zero_reference()
                         elif op == 'clear_zero':
                             processor.clear_zero_reference()
+                        elif op == 'exposure_auto':
+                            if self.demo:
+                                raise ValueError('模拟源使用固定曝光')
+                            from .exposure_adjustment import adjust_exposure
+                            self._update(message='正在自动调整曝光，请保持光源稳定', error=None)
+                            limit = self.saturation_policy['threshold']
+                            measured, peak = adjust_exposure(source, region if roi_ready else None,
+                                exposure['min'], exposure['max'], self.stop_event, threshold=limit)
+                            if measured != exposure['value']:
+                                invalidate_dark('曝光已改变，请采集匹配的暗场')
+                                processor.clear_buffer()
+                                processor.clear_zero_reference()
+                                activate_saved_dark()
+                            exposure.update(auto=False,value=measured)
+                            auto_message = f'已锁定低于 {limit} counts 的最长曝光档，选区实测峰值 {peak} counts'
+                            if peak < .9 * limit:
+                                auto_message += '，受光强或相机档位限制，尚未接近阈值'
                         elif op == 'exposure':
                             if self.demo:
                                 raise ValueError('合成光谱没有曝光控制')
@@ -378,51 +601,87 @@ class Spectrometer:
                                 raise ValueError('网页采集固定使用手动曝光，以便复用暗场和卤素灯参考')
                             if type(value) is not int or not 1<=value<=5000:
                                 raise ValueError('曝光必须为 1–5000 的整数')
-                            invalidate_dark('曝光设置已改变，请重新采集暗场')
                             source.set_exposure(value)
-                            if roi_finder is not None:
-                                roi_finder = SignalRoiFinder()
-                            exposure.update(auto=False, value=source.get_exposure())
-                            persist_profile()
+                            measured = source.get_exposure()
+                            if measured != exposure['value']:
+                                invalidate_dark('曝光设置已改变，请重新采集暗场')
+                                processor.clear_buffer()
+                                processor.clear_zero_reference()
+                                if roi_finder is not None:
+                                    roi_finder = SignalRoiFinder()
+                            exposure.update(auto=False, value=measured)
+                            if command.get('draft') is not True:
+                                persist_profile()
                             activate_saved_dark()
                         elif op == 'halogen_capture':
-                            from .halogen_reference import capture
-                            from .instrument_profile import write_profile
-                            current = recording.make_record(result,calibration=cal,roi=region,source_info=device_info,exposure=exposure,seq=seq)
+                            if command.get('confirmed') is not True:
+                                raise ValueError('请确认当前为空白光路、无样品的卤素灯参考')
                             current_settings = settings_now()
-                            if dark_controls is None or current_settings['controls'] != dark_controls:
-                                raise ValueError('相机参数变化，不能保存卤素灯参考')
-                            candidate = capture(current,binding,current_settings,command.get('confirmed'))
-                            write_profile(halogen_path,candidate)
-                            halogen = candidate
-                            self.refresh_files()
+                            if current_settings['controls'].get('auto_exposure') != 1:
+                                raise ValueError('请先应用手动曝光')
+                            if dark_controls is None or result.dark_profile is None or current_settings['controls'] != dark_controls:
+                                raise ValueError('未应用匹配的暗场。请保持采样范围与曝光，遮光重采并保存暗场。')
+                            if processor.zero_active:
+                                raise ValueError('请先清除样品零参考，再保存 I₀。')
+                            # Saving I₀ only depends on applied settings. Use an
+                            # existing archive when it describes this exact setup.
+                            saved = None
+                            if history_key is not None:
+                                try:
+                                    saved = history.read(history_key)
+                                except (OSError, ValueError, KeyError, TypeError):
+                                    pass
+                            saved_dark = saved and saved.get('dark')
+                            attach_to_history = bool(saved_dark and saved.get('roi_saved')
+                                and saved_dark['metadata']['id'] == result.dark_metadata['id']
+                                and saved['settings']['roi'] == current_settings['roi']
+                                and saved['settings']['controls'] == current_settings['controls'])
+                            current_settings['processing'].update(buffer_size=BLANK_FRAMES, hold_peaks=False)
+                            sampler = spectrum.SpectrumProcessor(config.ProcessingConfig(**current_settings['processing']))
+                            sampler.set_dark_reference(result.dark_profile,result.dark_metadata,region.x)
+                            halogen_job = dict(sampler=sampler, settings=current_settings, attach=attach_to_history,
+                                               count=0, max_ratio=0., raw_max=0)
+                            self._update(halogen_capture={'status':'collecting','count':0,'total':BLANK_FRAMES})
                         elif op == 'lamp_capture':
                             if command.get('confirmed') is not True:
                                 raise ValueError('请确认当前入光来自皓宇荧光灯')
-                            if dark_controls is None or hardware_controls()!=dark_controls:
-                                invalidate_dark('相机参数已改变，请重新采集暗场')
-                                raise ValueError('请先完成有效暗场校正，再冻结灯谱')
+                            controls = hardware_controls()
+                            if dark_controls is not None and controls != dark_controls:
+                                invalidate_dark('相机参数已改变，暗场已暂停')
+                                raise ValueError('曝光条件刚发生变化，请等新帧再采集灯谱')
                             if result is None or result.buffer_len < 32:
                                 raise ValueError('请将平均帧数设为32或以上，保持灯和光路不动，等待平均完成后再冻结灯谱')
                             from .lamp_calibration import freeze_lamp
                             lamp = freeze_lamp(result,binding,region,seq)
+                            lamp['controls'] = controls
                             self._update(lamp=lamp)
-                        elif op == 'lamp_calibrate':
+                        elif op in ('lamp_calibrate','peaks_save'):
+                            if op == 'peaks_save' and lamp is None:
+                                if cal is None:
+                                    raise ValueError('请先采集灯谱并选峰，或选择既有峰记录')
+                                saved_path = archive_stage('peaks', wave={'binding':binding,'calibration':cal.to_dict(),
+                                                           'report':cal.verification,'lamp':saved_lamp})
+                                self._update(error=None,wavelength_calibration={'saved':True,'path':str(saved_path),
+                                                                               'id':cal.calibration_id})
+                                continue
                             if recording_path is not None:
                                 raise ValueError('请先结束连续记录再更改波长标定')
-                            if (lamp is None or command.get('snapshot_id')!=lamp['id'] or
-                                result.dark_metadata is None or lamp['dark_id']!=result.dark_metadata['id']):
-                                raise ValueError('灯谱快照已失效，请完成暗场后重新冻结灯谱')
-                            if hardware_controls()!=dark_controls:
-                                invalidate_dark('相机参数已改变，请重新采集暗场')
-                                raise ValueError('暗场条件已改变，拒绝保存旧快照标定')
+                            if lamp is None or command.get('snapshot_id')!=lamp['id']:
+                                raise ValueError('灯谱快照已失效，请重新采集灯谱')
+                            if hardware_controls()!=lamp['controls']:
+                                raise ValueError('曝光条件已改变，请重新采集灯谱')
                             from .lamp_calibration import fit_lamp
-                            candidate,report = fit_lamp(lamp,command.get('points'),command.get('check_points'),degree=command.get('degree',2))
-                            self.data_dir.mkdir(parents=True,exist_ok=True)
-                            write_profile(cal_path,{'binding':binding,'calibration':candidate.to_dict(),'report':report,'lamp':lamp})
+                            candidate,report = fit_lamp(lamp,command.get('points'),command.get('check_points'),
+                                degree=command.get('degree',2), manual=op=='peaks_save')
+                            wave = {'binding':binding,'calibration':candidate.to_dict(),'report':report,'lamp':lamp}
+                            if op == 'peaks_save':
+                                saved_path = archive_stage('peaks', wave=wave)
+                            else:
+                                write_profile(cal_path,wave)
+                                saved_path = cal_path
                             cal = candidate
                             saved_lamp = copy.deepcopy(lamp)
-                            self._update(calibration_report=report,saved_lamp=saved_lamp,wavelength_calibration={'saved':True,'path':str(cal_path),'id':cal.calibration_id})
+                            self._update(calibration_report=report,saved_lamp=saved_lamp,wavelength_calibration={'saved':True,'path':str(saved_path),'id':cal.calibration_id})
                             self.refresh_files()
                         elif op == 'calibrate':
                             points = command.get('points')
@@ -469,6 +728,14 @@ class Spectrometer:
                             recording_path = None
                             self._update(recording=False)
                             self.refresh_files()
+                        elif op == 'absorbance_save':
+                            from .absorbance_capture import save_absorbance
+                            capture = save_absorbance(self.data_dir/'captures', record, frame_reference,
+                                name=command.get('name',''), processing=vars(processing), history_id=history_key)
+                            capture['files'] = {ext:'/api/spectrometer-file/'+quote(Path(path).name)
+                                                for ext,path in capture['files'].items()}
+                            self.refresh_files()
+                            self._update(absorbance_capture=capture)
                         elif op == 'save':
                             if result is None:
                                 raise ValueError('还没有可保存的光谱')
@@ -476,14 +743,20 @@ class Spectrometer:
                             files = recording.save_capture(self.data_dir/'captures', result, calibration=cal,
                                 roi=region, source_info=device_info, exposure=exposure, seq=seq,
                                 frame=last_frame, graph_image=render_spectrum(result,calibration=cal,roi=region),
-                                stem='spectrum-'+uuid.uuid4().hex, extra={'photometry':photometry})
+                                stem='spectrum-'+uuid.uuid4().hex, extra={'photometry':photometry, 'saturation':record.get('saturation'), 'stats':record['stats']})
                             with self.lock:
                                 self.exports.update({Path(v).name:Path(v) for v in files.values()})
                                 self.state['files'].update({k:'/api/spectrometer-file/'+Path(v).name for k,v in files.items()})
                             self.refresh_files()
-                        self._update(error=None, message='已保存采集文件' if op=='save' else '设置已应用')
+                        if op == 'exposure_auto' or op == 'halogen_capture' or op.startswith('history_'):
+                            self._update(error=None)
+                        else:
+                            self._update(error=None, message='已保存单幅吸光度曲线' if op=='absorbance_save' else '已保存采集文件' if op=='save' else '设置已应用')
                     except Exception as exc:
-                        self._update(error=str(exc))
+                        if op == 'exposure_auto':
+                            self._update(error=str(exc), message='自动曝光未完成')
+                        else:
+                            self._update(error=str(exc))
                 frame = source.read()
                 if self.stop_event.is_set():
                     break
@@ -496,18 +769,11 @@ class Spectrometer:
                 if roi_finder is not None and dark_job is None and recording_path is None:
                     candidate = roi_finder.add(frame)
                     if candidate is not None:
-                        changed = candidate != region
-                        if changed:
-                            region = candidate
-                            invalidate_dark('已自动识别新的完整光谱范围；请在此范围采集一次暗场，或恢复原校准设置')
-                            processor = spectrum.SpectrumProcessor(processing)
-                        roi_ready = True
-                        roi_finder = None
-                        persist_profile()
+                        set_region(candidate, '已识别光谱范围')
+                        if not auto_roi_draft:
+                            persist_profile()
                         initial_save = False
-                        activate_saved_dark()
-                        self._update(error=None,roi_selection={'ready':True,'scanning':False,
-                            'message':'已自动识别并保存完整光信号范围；测量与遮光时保持固定'})
+                        self._update(error=None)
                     elif roi_finder.count == 0:
                         self._update(roi_selection={'ready':roi_ready,'scanning':True,
                             'message':'暂未识别到高于底噪的有效光信号，继续等待入光；不改变已保存范围'})
@@ -529,11 +795,20 @@ class Spectrometer:
                     if dark_job['discard']:
                         dark_job['discard'] -= 1
                     else:
-                        sample = dark_job['sampler'].update(region.crop(frame),region.x)
-                        if sample.saturated:
+                        full = dark_job['full']
+                        sampled = roi.Roi(0,0,binding['width'],binding['height']) if full else region
+                        if full:
+                            b,g,r = cv2.split(frame)
+                            values = (r*processing.gain_r + g*processing.gain_g + b*processing.gain_b) / 3
+                            saturated = saturation.evaluate(frame, self.saturation_policy)[0]
+                        else:
+                            sample = dark_job['sampler'].update(sampled.crop(frame),sampled.x)
+                            values = sample.raw_intensity
+                            saturated = saturation.evaluate(sampled.crop(frame), self.saturation_policy)[0]
+                        if saturated and self.saturation_policy['block']:
                             invalidate_dark('暗场画面饱和，采集已取消；请检查遮光和曝光')
                         else:
-                            values = sample.raw_intensity.astype(np.float64)
+                            values = values.astype(np.float64,copy=False)
                             if dark_job['sum'] is None:
                                 dark_job['sum'] = np.zeros_like(values)
                                 dark_job['sum2'] = np.zeros_like(values)
@@ -546,22 +821,33 @@ class Spectrometer:
                                 variance = np.maximum(0,dark_job['sum2']/total-background*background)
                                 metadata = {'id':uuid.uuid4().hex,'created':datetime.now().astimezone().isoformat(),
                                             'frames':total,'discarded_frames':3,'binding':binding,
-                                            'roi':dict(zip(('x','y','w','h'),region.as_tuple())),
+                                            'saturation':dict(self.saturation_policy),
+                                            'roi':dict(zip(('x','y','w','h'),sampled.as_tuple())),
                                             'controls':dark_controls,'processing':copy.deepcopy(vars(processing)),
                                             'mean_counts':float(background.mean()),
                                             'max_counts':float(background.max()),
                                             'temporal_std_mean':float(np.sqrt(variance).mean())}
-                                # Commit to disk before marking calibration complete.
-                                try:
-                                    persist_profile(dark_update=True,dark_value={'background':background.tolist(),'metadata':metadata})
-                                except Exception as exc:
-                                    invalidate_dark('底噪保存失败，未启用新校准；请检查磁盘后重试')
-                                    self._update(error='底噪保存失败：'+str(exc))
-                                    continue
-                                processor.set_dark_reference(background,metadata,region.x)
                                 dark_job = None
-                                completed_dark = {'status':'ready','count':total,'total':total,
-                                    'metadata':metadata,'message':'暗场已保存并启用，可打开入光口；下次连接自动恢复'}
+                                if full:
+                                    deviation = np.sqrt(variance)
+                                    working_dark = {'background':background.mean(axis=0).tolist(),
+                                        'metadata':metadata,'image':encode_dark(background,deviation)}
+                                    history_key = None
+                                    dark_pending = True
+                                    dark_reset = False
+                                    decoded_dark = (metadata['id'],np.asarray((background,deviation),dtype=np.float32))
+                                    activate_saved_dark()
+                                    self._update(active_history=None,history_message='暗场已采集，请保存后打开入光口')
+                                else:
+                                    try:
+                                        persist_profile(dark_update=True,dark_value={'background':background.tolist(),'metadata':metadata})
+                                    except Exception as exc:
+                                        invalidate_dark('底噪保存失败，未启用新校准；请检查磁盘后重试')
+                                        self._update(error='底噪保存失败：'+str(exc))
+                                        continue
+                                    processor.set_dark_reference(background,metadata,region.x)
+                                    completed_dark = {'status':'ready','count':total,'total':total,
+                                        'metadata':metadata,'message':'暗场已保存并启用，可打开入光口'}
                             else:
                                 self._update(dark={'status':'collecting','count':count,'total':total,'message':'正在平均暗场，请保持遮光'})
                 if initial_save and roi_ready:
@@ -570,43 +856,105 @@ class Spectrometer:
                         persist_profile()
                     except Exception as exc:
                         self._update(error='采集设置保存失败：'+str(exc))
-                result = processor.update(region.crop(frame),region.x)
+                if not self.demo and hasattr(source,'exposure_info'):
+                    exposure.update(source.exposure_info())
+                elif exposure['value'] is not None:
+                    exposure['milliseconds'] = exposure['value'] * .1
+                device_info['sample_bits'] = frame.dtype.itemsize * 8
+                pixels = region.crop(frame)
+                result = processor.update(pixels,region.x)
                 if cal:
                     result.wavelengths = cal.wavelengths(region.x,region.w)
                 seq += 1
                 record = recording.make_record(result,calibration=cal,roi=region,source_info=device_info,exposure=exposure,seq=seq)
-                from .halogen_reference import compare
-                photometry = compare(halogen,record,binding,{'roi':record['roi'],'processing':vars(processing),'controls':dark_controls or {}})
+                saturation.annotate(record, pixels, self.saturation_policy)
+                if halogen_job is not None:
+                    job = halogen_job
+                    try:
+                        if (job['settings']['controls'] != dark_controls or
+                            (job['count']+1 == BLANK_FRAMES and hardware_controls() != dark_controls)):
+                            raise ValueError('采集空白 I₀ 时相机设置发生变化，请恢复匹配的暗场后重试')
+                        if saturation.blocked(record):
+                            raise ValueError('空白 I₀ 采集中达到饱和阈值，未保存本次参考')
+                        blank = job['sampler'].update(pixels,region.x)
+                        job['count'] = blank.buffer_len
+                        job['max_ratio'] = max(job['max_ratio'],record['saturation']['ratio'])
+                        job['raw_max'] = max(job['raw_max'],record['saturation']['raw_max'])
+                        if job['count'] == BLANK_FRAMES:
+                            blank.wavelengths = result.wavelengths
+                            current = recording.make_record(blank,calibration=cal,roi=region,source_info=device_info,exposure=exposure,seq=seq)
+                            exceeded = job['max_ratio'] >= saturation.MIN_RATIO
+                            current['stats'].update(saturated=exceeded,saturated_ratio=job['max_ratio'])
+                            current['saturation'] = dict(record['saturation'],exceeded=exceeded,
+                                                         ratio=job['max_ratio'],raw_max=job['raw_max'])
+                            candidate = capture_blank(current,binding,job['settings'],True)
+                            if job['attach']:
+                                archive_stage('reference', reference=candidate)
+                                halogen = candidate
+                            else:
+                                write_profile(halogen_path,candidate)
+                                standalone_halogen = candidate
+                            halogen_job = None
+                            self.refresh_files()
+                            self._update(halogen_capture={'status':'ready','count':BLANK_FRAMES,'total':BLANK_FRAMES},
+                                         message=f'已保存 {BLANK_FRAMES} 帧平均空白 I₀',error=None)
+                        else:
+                            self._update(halogen_capture={'status':'collecting','count':job['count'],'total':BLANK_FRAMES})
+                    except Exception as exc:
+                        halogen_job = None
+                        self._update(halogen_capture={'status':'error','message':str(exc)},error=str(exc))
+                applied = {'roi':record['roi'],'processing':vars(processing),'controls':dark_controls or {}}
+                frame_reference = halogen or standalone_halogen
+                if (standalone_halogen is not None and halogen is not None
+                    and reference_matches(standalone_halogen,record,binding,applied)
+                    and (standalone_halogen['created'] > halogen['created']
+                         or not reference_matches(halogen,record,binding,applied))):
+                    frame_reference = standalone_halogen
+                photometry = compare(frame_reference,record,binding,applied)
                 record['photometry'] = photometry
-                self._update(halogen={'saved':halogen is not None,'path':str(halogen_path),
-                    'created':halogen['created'] if halogen else None,'id':halogen['id'] if halogen else None,
+                self._update(halogen={'saved':frame_reference is not None,'path':str(halogen_path),
+                    'created':frame_reference['created'] if frame_reference else None,'id':frame_reference['id'] if frame_reference else None,
+                    'frames':frame_reference['record']['stats']['buffer_len'] if frame_reference else None,
                     'active':photometry['active'],'message':photometry['message']})
                 record['stats']['low_light'] = result.raw_max < 16
                 if recording_path is not None and time.monotonic() >= record_at:
                     recording.append_jsonl(recording_path, record)
                     record_at = time.monotonic()+record_interval
-                preview = frame.copy()
-                cv2.rectangle(preview,(region.x,region.y),(region.x+region.w-1,region.y+region.h-1),(80,220,80),2)
-                if preview.shape[1]>800:
-                    preview = cv2.resize(preview,(800,round(preview.shape[0]*800/preview.shape[1])))
-                ok, encoded = cv2.imencode('.jpg',preview,[cv2.IMWRITE_JPEG_QUALITY,75])
+                now = time.monotonic()
+                refresh_preview = now >= preview_at
+                if refresh_preview:
+                    preview = frame.copy()
+                    cv2.rectangle(preview,(region.x,region.y),(region.x+region.w-1,region.y+region.h-1),(80,220,80),2)
+                    if preview.shape[1]>800:
+                        preview = cv2.resize(preview,(800,round(preview.shape[0]*800/preview.shape[1])))
+                    ok, encoded = cv2.imencode('.jpg',preview,[cv2.IMWRITE_JPEG_QUALITY,75])
+                    preview_at = now + .125
                 with self.lock:
-                    self.preview = encoded.tobytes() if ok else None
+                    if refresh_preview:
+                        self.preview = encoded.tobytes() if ok else None
                     self.state.update(status='connected',connected=True,record=record,processing=copy.deepcopy(vars(processing)),frame_time=time.monotonic())
+                    if auto_message is not None:
+                        self.state['message'] = auto_message
                     if completed_dark is not None:
                         self.state.update(dark=completed_dark, message='暗场校正完成，后续强度将逐像素扣除底噪')
                 last_frame = frame
-                self.stop_event.wait(.12)
+                if not windows_capture:
+                    self.stop_event.wait(.12)
         except Exception as exc:
             self._update(status='error', error=str(exc), message='光谱仪采集已停止')
         finally:
-            if source:
-                source.close()
-            if guard:
-                guard.close()
+            try:
+                if source:
+                    source.close()
+            except Exception as exc:
+                self._update(status='error', error=str(exc), message='释放光谱仪时出错')
+            finally:
+                if guard:
+                    guard.close()
             with self.lock:
                 self.state['connected'] = False
                 self.state['recording'] = False
+                self.state['halogen_capture'] = None
                 self.state['lamp'] = None
                 self.state['dark'] = {'status':'none','message':'已断开；保存的校准保留，下次连接自动恢复'}
                 if self.state['status'] != 'error':

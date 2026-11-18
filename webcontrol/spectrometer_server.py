@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import mimetypes
 import threading
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 import webbrowser
 
 from .errors import APIError
@@ -45,7 +45,7 @@ class Handler(LocalHandler):
             self._respond(200 if preview else 404, preview or b"", "image/jpeg")
             return True
         if path.startswith("/api/spectrometer-file/"):
-            name = path.removeprefix("/api/spectrometer-file/")
+            name = unquote(path.removeprefix("/api/spectrometer-file/"))
             with self.server.spectrometer.lock:
                 file = self.server.spectrometer.exports.get(name)
             if file and file.is_file():

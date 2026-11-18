@@ -129,7 +129,7 @@ def make_record(
             "w": int(roi.w),
             "h": int(roi.h),
         },
-        "exposure": exposure,
+        "exposure": dict(exposure) if exposure is not None else None,
         "calibration": calibration.to_dict() if calibration else None,
         "dark_correction": {
             "active": result.dark_profile is not None,
@@ -139,7 +139,8 @@ def make_record(
         },
         "units": {
             "wavelength": "nm",
-            "intensity": "camera counts, gain/dark/zero corrected as indicated; signed, not radiometrically calibrated",
+            "intensity": "counts",
+            "intensity_description": "Decoded camera-code values averaged across channels and ROI rows, with indicated corrections. No radiometric calibration."
         },
         "stats": result.summary(),
         "files": {},
