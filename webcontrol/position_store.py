@@ -23,7 +23,10 @@ def write(path, value):
 
 
 def read(path):
-    value = json.loads(Path(path).read_text())
+    return validate(json.loads(Path(path).read_text()))
+
+
+def validate(value):
     if value.get('schema') != 1 or type(value.get('reliable')) is not bool or value.get('long_id') not in (1, 2, 3):
         raise ValueError('位置记录格式无效')
     axes = value['axes']
@@ -37,6 +40,14 @@ def read(path):
             a['lead_mm'] not in (2, 4) or type(a['lead_mm']) is bool or
             type(a['forward_sign']) is not int or a['forward_sign'] not in (-1, 1)):
             raise ValueError('位置记录超出机械范围或方向导程无效')
+    geometry = value.get('geometry', {})
+    if not isinstance(geometry, dict) or any(
+        ident not in ('1', '2', '3') or not isinstance(g, dict) or
+        type(g.get('forward_sign')) is not int or g['forward_sign'] not in (-1, 1) or
+        g.get('lead_mm') not in (2, 4)
+        for ident, g in geometry.items()
+    ):
+        raise ValueError('方向或导程记录无效')
     return value
 
 

@@ -54,6 +54,28 @@ class HostPumpTests(unittest.TestCase):
             self.assertEqual(m['flow_ml_min'],f)
             self.assertAlmostEqual(m['volume_ml'],f,places=4)
         self.assertEqual(len(self.t.bus.starts),2)
+    def test_volume_plan_runs_on_firmware_and_checkpoints_final_positions(self):
+        from enzyflow.syringe_pump import AREA_MM2
+        items = [dict(axis=i, direction=1, remaining_mm=2,
+                      target_volume_ml=AREA_MM2/1000,
+                      segments=[dict(distance_mm=0.5, flow_ml_min=rate)
+                                for rate in (0.5, 1.0)])
+                 for i in (2, 3)]
+        self.post('pump_start', items=items, confirmed=True)
+        self.c.step()
+        for _ in range(200):
+            self.clock.sleep_ms(300)
+            self.post('heartbeat')
+            self.c.step()
+            if self.c.snapshot()['job']['state'] != 'running':
+                break
+        state = self.c.snapshot()
+        self.assertEqual(state['job']['state'], 'done', state['job'])
+        self.assertTrue(state['saved_positions']['reliable'])
+        self.assertEqual(len(self.t.bus.starts), 4)
+        for a in state['saved_positions']['axes']:
+            self.assertAlmostEqual(a['position_mm'], 101, delta=0.05)
+
     def test_invalid_rate_or_old_firmware_rejected_before_start(self):
         for flow in (0,-1,3,True):
             with self.assertRaises(APIError):
@@ -61,6 +83,24 @@ class HostPumpTests(unittest.TestCase):
         self.c.state['capabilities'].remove('pump_rates')
         with self.assertRaises(APIError):self.start()
         self.assertEqual(self.t.bus.starts,[])
+
+    def test_distance_plan_and_constant_rate_can_run_together(self):
+        self.post('pump_start', confirmed=True, items=[
+            dict(axis=2, direction=1, remaining_mm=3, segments=[
+                dict(distance_mm=0.5, flow_ml_min=1), dict(distance_mm=0.5, flow_ml_min=2)]),
+            dict(axis=3, direction=1, remaining_mm=3, flow_ml_min=1),
+        ])
+        self.c.step()
+        for _ in range(300):
+            self.clock.sleep_ms(300)
+            self.post('heartbeat')
+            self.c.step()
+            if self.c.snapshot()['job']['state'] != 'running':
+                break
+        job = self.c.snapshot()['job']
+        self.assertEqual(job['state'], 'done', job)
+        self.assertEqual([member['distance_mm'] for member in job['members']], [1, 2])
+        self.assertEqual(len(self.t.bus.starts), 3)
     def test_page_lease_loss_brakes_both_axes(self):
         self.start();self.c.step();self.clock.sleep_ms(6000);self.c.step()
         self.assertFalse(self.t.bus.rates);self.assertEqual(self.t.bus.stops,[2,3])

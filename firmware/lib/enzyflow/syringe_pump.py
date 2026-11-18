@@ -44,8 +44,10 @@ class SyringePump:
             raise ValueError('必须确认两个短轴及注射器剩余行程')
         shorts = set(self.c.axes) - {long_id}
         plans = []
+        segmented = all(type(i) is dict and 'segments' in i for i in items)
         for item in items:
-            if type(item) is not dict or set(item) not in ({'axis', 'direction', 'remaining_mm'}, {'axis', 'direction', 'remaining_mm', 'flow_ml_min'}):
+            if type(item) is not dict or set(item) not in ({'axis', 'direction', 'remaining_mm'}, {'axis', 'direction', 'remaining_mm', 'flow_ml_min'},
+                    {'axis', 'direction', 'remaining_mm', 'flow_ml_min', 'segments', 'target_volume_ml'}):
                 raise ValueError('注射参数无效')
             axis = self.c._axis(item['axis'])
             if axis.ident not in shorts or any(m['axis'] == axis.ident for m in plans):
@@ -67,6 +69,27 @@ class SyringePump:
             distance = min(remaining - self.END_MARGIN_MM, mechanical_room - 0.5)
             if distance < 0.5:
                 raise ValueError('剩余安全行程不足0.5mm')
+            phases = []
+            if 'segments' in item:
+                segments = item['segments']
+                if not segmented or type(segments) is not list or not 1 <= len(segments) <= 12:
+                    raise ValueError('两个短轴各须设置1–12段')
+                total = 0.0
+                for segment in segments:
+                    if type(segment) is not dict or set(segment) != {'distance_mm', 'flow_ml_min'}:
+                        raise ValueError('注射分段格式无效')
+                    length = number(segment['distance_mm'])
+                    rate = number(segment['flow_ml_min'])
+                    if length < 0.5 or not 0.1 <= rate*1000/AREA_MM2/axis.lead_mm <= 2:
+                        raise ValueError('每段至少0.5mm，注射速度须在0.1–2rpm')
+                    total += length
+                    phases.append((total, rate))
+                if abs(total-number(item['target_volume_ml'])*1000/AREA_MM2) > 0.000001 or total > distance:
+                    raise ValueError('分段总距离不符或超出安全行程')
+                distance = total
+                flow = phases[0][1]
+                mm_min = flow*1000/AREA_MM2
+                rpm = mm_min/axis.lead_mm
             end = current + direction * distance
             axis.check_target(end)
             expected = axis.last + int(direction * distance * axis.sign * axis.pulses_per_mm)
@@ -75,6 +98,8 @@ class SyringePump:
             plans.append({'axis': axis.ident, 'direction': direction, 'start_mm': current,
                           'position_mm': current, 'end_mm': end, 'distance_mm': distance,
                           'rpm': rpm, 'flow_ml_min': flow, 'mm_min': mm_min, 'volume_ml': 0.0, 'progress': 0.0})
+            if phases:
+                plans[-1].update(phases=phases, phase=0, phase_origin=0.0, done=False)
         baseline = {i: self.c._stable(i) for i in self.c.axes}
         for m in plans:
             axis = self.c.axes[m['axis']]
@@ -90,6 +115,8 @@ class SyringePump:
         try:
             for member in self.members:
                 axis = self.c.axes[member['axis']]
+                if segmented:
+                    member['phase_at'] = self.clock.ticks_ms()
                 self.bus._velocity(axis.ident, member['rpm'] * member['direction'] * axis.sign)
         except Exception:
             self.stop('启动通信异常；已请求停止两轴')
@@ -134,6 +161,8 @@ class SyringePump:
                     raise ValueError('停机后编码器仍在变化')
                 self.counts[m['axis']] = last
                 axis = self.c.axes[m['axis']]
+                if m.get('done') and abs(last-axis.last) > 32:
+                    raise ValueError('已完成注射的轴发生移动')
                 m['position_mm'] = axis.position(last)
                 m['volume_ml'] = max(0, (m['position_mm']-m['start_mm'])*m['direction'])*AREA_MM2/1000
             except Exception:
@@ -174,19 +203,68 @@ class SyringePump:
                     continue
                 m = moving[ident]
                 axis = self.c.axes[ident]
+                if m.get('done'):
+                    if abs(value-axis.last) > 32:
+                        raise ValueError('已完成注射的轴发生移动')
+                    continue
                 position = axis.check_target(axis.position(value))
                 travelled = (position-m['start_mm'])*m['direction']
-                expected = m['mm_min'] * elapsed/60000
+                phase_elapsed = self.clock.ticks_diff(self.clock.ticks_ms(), m['phase_at']) if 'phases' in m else elapsed
+                origin = m.get('phase_origin', 0)
+                expected = m['mm_min'] * phase_elapsed/60000
                 # Encoder supervision catches reverse, stall and unexpected
                 # speed. These are feed checks, not pressure measurements.
-                if travelled < -0.025 or abs(travelled-expected) > 0.10 + expected*0.25:
+                if travelled-origin < -0.025 or abs(travelled-origin-expected) > 0.10 + expected*0.25:
                     raise ValueError('注射方向、速度或编码器反馈异常')
                 m['position_mm'] = position
                 m['volume_ml'] = max(0, travelled)*AREA_MM2/1000
                 m['progress'] = min(1.0, max(0, travelled/m['distance_mm']))
                 axis.last = value
+                if 'phases' in m:
+                    self._advance_phase(m, axis, travelled, phase_elapsed)
+                    continue
                 if travelled >= m['distance_mm'] - 0.05 or elapsed >= m['distance_mm']/m['mm_min']*60000:
                     self.stop('已到达设定行程，停止两支注射器', preserve=True)
                     return
+            if all(m.get('done') for m in self.members):
+                self.stop('两支注射器均已到达设定行程', preserve=True)
         except Exception as exc:
             self.stop(str(exc))
+
+    def _advance_phase(self, m, axis, travelled, elapsed):
+        end, _ = m['phases'][m['phase']]
+        if travelled > end + 0.1:
+            raise ValueError('注射超出本段目标距离')
+        if travelled < end - 0.01:
+            if elapsed > (end-m['phase_origin']+0.1)/m['mm_min']*60000*1.5 + 1000:
+                raise ValueError('注射未在允许时间内到达本段目标')
+            return
+        if m['phase'] + 1 == len(m['phases']):
+            ident = axis.ident
+            self.bus._brake(ident)
+            first = self.bus.read_pulses(ident)
+            self.clock.sleep_ms(150)
+            last = self.bus.read_pulses(ident)
+            if abs(last-first) > 8:
+                raise ValueError('单轴注射完成后仍在移动')
+            self.bus._clear_brake(ident)
+            first = self.bus.read_pulses(ident)
+            self.clock.sleep_ms(150)
+            last = self.bus.read_pulses(ident)
+            if abs(last-first) > 8:
+                raise ValueError('解除刹车后编码器仍在移动')
+            position = axis.check_target(axis.position(last))
+            travel = (position-m['start_mm'])*m['direction']
+            if abs(travel-end) > 0.1:
+                raise ValueError('停稳后注射距离超出误差范围')
+            axis.last = self.counts[ident] = last
+            m.update(done=True, position_mm=position, flow_ml_min=0.0, rpm=0.0,
+                     volume_ml=travel*AREA_MM2/1000, progress=1.0)
+            return
+        m['phase'] += 1
+        flow = m['phases'][m['phase']][1]
+        mm_min = flow*1000/AREA_MM2
+        rpm = mm_min/axis.lead_mm
+        m.update(phase_origin=travelled, phase_at=self.clock.ticks_ms(),
+                 flow_ml_min=flow, mm_min=mm_min, rpm=rpm)
+        self.bus._velocity(axis.ident, rpm*m['direction']*axis.sign)

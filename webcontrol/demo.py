@@ -22,7 +22,7 @@ class DemoTransport:
         self.session = "demo-" + uuid.uuid4().hex
         self.state = {"axes": blank_axes(), "counts": {"1": 0, "2": 0, "3": 0},
                       "configured": False, "long_id": 1, "margin_mm": 10.0,
-                      "rpm_min": 3, "rpm_max": 30, "feedback_cached": True, "capabilities": ["recover", "jog_group", "pump", "pump_rates", "emergency_stop", "continuous_reset", "continuous_move", "stop_preserve", "drive_restore", "graceful_shutdown"], "pump": None, "reset": None}
+                      "rpm_min": 3, "rpm_max": 30, "feedback_cached": True, "capabilities": ["recover", "jog_group", "pump", "pump_rates", "pump_segments", "emergency_stop", "continuous_reset", "continuous_move", "stop_preserve", "drive_restore", "graceful_shutdown"], "pump": None, "reset": None}
         return copy.deepcopy(self.state)
 
     def close(self, graceful=False):
@@ -35,11 +35,12 @@ class DemoTransport:
             self.state["reset"].update(active=False, state="急停已执行")
         if self.state.get("pump"):
             self.state["pump"].update(active=False, state="急停已执行")
+        self.emergency_axes = copy.deepcopy([a for a in self.state["axes"] if a["anchored"]])
         for axis in self.state["axes"]:
             axis.update(position_mm=None, anchored=False, lead_mm=None, forward_sign=None)
 
     def finish_emergency(self):
-        return {"confirmed": True, "failed_axes": []}
+        return {"confirmed": True, "failed_axes": [], "stopped_axes": self.emergency_axes}
 
     def request(self, op, args=None):
         args = args or {}
@@ -81,12 +82,17 @@ class DemoTransport:
                 start = axis["position_mm"]
                 room = axis["max_mm"]-start if direction > 0 else start-axis["min_mm"]
                 distance = min(item["remaining_mm"]-1, room-0.5)
+                segments = item.get("segments")
+                if segments:
+                    distance = sum(s["distance_mm"] for s in segments)
                 if distance < 0.5:
                     raise DeviceError("注射行程不足。")
                 members.append({"axis":axis["id"], "start_mm":start, "position_mm":start,
                                 "end_mm":start+direction*distance, "distance_mm":distance,
                                 "direction":direction, "rpm":rpm, "flow_ml_min":flow, "mm_min":flow*1000/area,
                                 "volume_ml":0.0,"progress":0.0})
+                if segments:
+                    members[-1].update(segments=segments, phase=0, done=False)
             self.pump_started = self.pump_heartbeat = time.monotonic()
             self.state["pump"] = {"active":True,"state":"running","members":members,"stop_fault":False,"total_flow_ml_min":sum(m["flow_ml_min"] for m in members)}
         elif op == "pump_heartbeat":
@@ -190,16 +196,37 @@ class DemoTransport:
             pump.update(active=False, state="主机心跳超时，已停止注射")
         else:
             area = math.pi*(19.22/2)**2
-            elapsed = min(now-self.pump_started, min(m["distance_mm"]/m["mm_min"]*60 for m in pump["members"]))
+            segmented = all("segments" in m for m in pump["members"])
+            elapsed = now-self.pump_started
+            if not segmented:
+                elapsed = min(elapsed, min(m["distance_mm"]/m["mm_min"]*60 for m in pump["members"]))
             for member in pump["members"]:
                 travel = elapsed*member["mm_min"]/60
+                if segmented:
+                    travel = 0.0
+                    time_left = elapsed
+                    axis = self._axis(member["axis"])
+                    for phase, segment in enumerate(member["segments"]):
+                        distance = segment["distance_mm"]
+                        flow = segment["flow_ml_min"]
+                        mm_min = flow*1000/area
+                        duration = distance/mm_min*60
+                        travel += min(distance, time_left*mm_min/60)
+                        member.update(phase=phase, flow_ml_min=flow, rpm=mm_min/axis["lead_mm"])
+                        if time_left < duration:
+                            break
+                        time_left -= duration
+                    if travel >= member["distance_mm"]-1e-9:
+                        member.update(done=True, flow_ml_min=0.0, rpm=0.0)
                 travelled = min(travel, member["distance_mm"])
                 member.update(position_mm=member["start_mm"]+member["direction"]*travelled,
                               volume_ml=travelled*area/1000, progress=travelled/member["distance_mm"])
                 axis = self._axis(member["axis"])
                 axis["position_mm"] = member["position_mm"]
-                if travel >= member["distance_mm"]:
+                if not segmented and travel >= member["distance_mm"]:
                     pump.update(active=False, state="已到达设定行程，停止两支注射器")
+            if segmented and all(m["done"] for m in pump["members"]):
+                pump.update(active=False, state="两支注射器均已到达设定行程")
         if not pump["active"] and "到达设定行程" not in pump["state"]:
             for axis in self.state["axes"]:
                 axis.update(position_mm=None, anchored=False, lead_mm=None, forward_sign=None)

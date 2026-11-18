@@ -40,7 +40,7 @@
 
     <section class="setup-panel" id="setup-panel" aria-labelledby="setup-title">
       <div class="section-heading"><div><span class="section-kicker">开始前</span><h2 id="setup-title">建立本次位置基准</h2></div><button class="icon-button" id="close-setup" type="button" aria-label="收起标定面板" hidden>−</button></div>
-      <p class="setup-intro">首次使用先确认长短轴、尺量建立基准。每次正常到位或确认停止后自动保存位置；下次连接可恢复保存的位置，无需重复尺量。</p>
+      <p class="setup-intro">服务重启后首次连接会自动采用同一设备上可信的停留位置。需要修改时，打开标定面板并输入重新尺量的位置。</p>
       <p id="saved-position-state" class="setup-footnote"></p><button id="restore-positions" class="button button-secondary" disabled>恢复已保存位置</button>
       <div class="mapping-form"><label class="checkbox-label"><input id="drive-restore-confirm" type="checkbox"><span>电机已停止、故障排除，允许恢复驱动力</span></label><button id="drive-restore" class="button button-secondary" disabled>恢复驱动状态</button></div><p class="setup-footnote">仅用于刹车或失能后无法启动：恢复不发送位移指令，会验证静止状态；恢复后核对位置再操作。日常中途结束用“停止”，停稳后可直接下发新目标。</p>
       <div class="setup-steps" aria-label="准备进度"><span id="step-connect"><b>01</b>连接设备</span><span id="step-configure"><b>02</b>确认长短轴</span><span id="step-anchor"><b>03</b>尺量标定</span></div>
@@ -52,6 +52,10 @@
           <button class="button button-primary button-small" id="configure-button" type="button" disabled>确认对应关系</button>
         </div>
         <div class="calibration-grid" id="calibration-grid"></div>
+        <div class="mapping-form">
+          <label class="checkbox-label"><input id="anchor-confirm" type="checkbox" checked><span>已核对三个轴的尺量位置</span></label>
+          <button class="button button-outline" id="anchor-all" type="button" disabled>建立三轴基准</button>
+        </div>
         <p class="setup-footnote"><span aria-hidden="true">ⓘ</span>保存位置基于丝杆不会被手动移动的条件。急停、未确认停稳、通信故障或机械拆装后须重新核对；正常断开后可恢复。重新确认机号会清除当前基准。</p>
       </div>
     </section>
@@ -68,7 +72,7 @@
       <div class="calibration-grid" id="pump-inputs"></div>
       <div class="mapping-form"><label class="checkbox-label"><input type="checkbox" id="pump-confirm"><span>已核对两支注射器内径、各自速率、推注方向和实测剩余行程</span></label><button class="button button-primary" id="pump-start" type="button" disabled>按 A、B 设定速率开始推进</button></div>
       <p class="setup-footnote" id="pump-hint">先连接并标定两个短轴；剩余行程不使用历史数值。</p>
-      <p class="setup-footnote">推杆末端预留 1 mm，同时遵守丝杆安全区；任一轴到达设定终点时停止两轴。点击顶部“停止注射”可请求停止；关闭控制页或失去主机心跳会触发停机。显示体积由编码器估算，实际流量需收集称量校验。控制器断电或RS485故障时需切断电机电源，软件不能保证停机。</p>
+      <p class="setup-footnote">两轴均用恒速时，任一轴到达安全行程终点就停止两轴。开启任一轴的分段调速后，各轴到达各自终点即停。点击“停止注射”或失去控制心跳会停止两轴。显示体积由编码器估算。</p>
     </section>
 
     <section class="setup-panel" aria-labelledby="reset-title"><div class="section-heading"><h2 id="reset-title">三轴连续复位到指定位置</h2></div><p class="setup-intro">各轴一次连续移动到你填写的位置，不是撞限位找零。请先确认各轴当前实测位置及回程空间。</p><div class="calibration-grid" id="reset-inputs"></div><div class="mapping-form"><label class="input-label">复位速度（rpm）<input id="reset-rpm" type="number" min="3" max="30" step="1" value="30"></label><label class="checkbox-label"><input id="reset-confirm" type="checkbox"><span>已核对三轴目标和运动路径，允许以此速度复位</span></label><button class="button button-primary" id="reset-start" type="button" disabled>三轴连续复位</button></div><p class="setup-footnote">默认30rpm，4mm导程名义速度约2mm/s；不再逐段停顿，各轴到位后独立停止。急停后排除故障，可恢复驱动并解除急停，再核对位置；不会自动复位或续跑。30rpm尚未完成带载实机验收。</p></section>

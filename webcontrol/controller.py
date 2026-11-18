@@ -85,6 +85,7 @@ class Controller:
         latched = bool(self.latch_path and self.latch_path.exists())
         if latched:
             self.auto_connect = False
+        self.restore_on_startup = not latched and bool(self.saved_positions and self.saved_positions.get('reliable'))
         self.state = {"estop_latched": latched, "estop_confirmed": False if latched else None, "connected": False, "connecting": False, "demo": demo,
                       "port": None, "device": None, "session": None,
                       "axes": blank_axes(), "counts": {}, "configured": False,
@@ -123,6 +124,7 @@ class Controller:
             self._expire_lease()
             result = copy.deepcopy(self.state)
             result["saved_positions"] = copy.deepcopy(self.saved_positions)
+            result["supports_batch_anchor"] = True
             result["position_file"] = str(self.position_path) if self.position_path else None
             result["events"] = list(self.events)
             result["busy"] = self._busy()
@@ -185,6 +187,22 @@ class Controller:
             self.wakeup.set()
             return dict(reply, state=self.snapshot())
 
+    def _anchor_settings(self, body):
+        axis = self._axis(body.get("axis"))
+        mm = finite(body.get("mm"), "当前位置")
+        if not axis["physical_min_mm"] <= mm <= axis["physical_max_mm"]:
+            raise APIError("尺量位置超出该轴机械有效范围。")
+        saved = self.saved_positions or {}
+        previous = {}
+        if saved.get('binding') == self._position_binding() and saved.get('long_id') == self.state['long_id']:
+            previous = saved.get('geometry', {}).get(str(axis['id'])) or next(
+                (a for a in saved.get('axes', []) if a['id'] == axis['id']), {})
+        sign = body.get('sign', axis['forward_sign'] or previous.get('forward_sign', -1))
+        lead = body.get('lead', axis['lead_mm'] or previous.get('lead_mm', 4))
+        if type(sign) is not int or sign not in (-1, 1) or lead not in (2, 4) or isinstance(lead, bool):
+            raise APIError("请确认前进方向和每圈 2 或 4 mm 的导程。")
+        return {"axis": axis["id"], "mm": mm, "sign": sign, "lead": lead, "confirmed": True}
+
     def _submit(self, op, body, client):
         if op == "claim":
             if self.state["owner"] not in (None, client):
@@ -218,7 +236,7 @@ class Controller:
                 self.state["last_error"] = "设备未连接，无法确认急停；请切断电机电源。"
                 self.state["estop_confirmed"] = False
             try:
-                self._mark_positions_pending('急停，位置需重新确认')
+                self._mark_positions_pending('急停时无停稳读数；此前记录仅供核对', force=True)
             except OSError:
                 self.saved_positions = None
             if self.latch_path:
@@ -289,17 +307,18 @@ class Controller:
         elif op == "anchor":
             if not self.state["configured"]:
                 raise APIError("请先确认三轴机号与长轴。", 409)
-            axis = self._axis(body.get("axis"))
-            mm = finite(body.get("mm"), "当前位置")
-            if not axis["physical_min_mm"] <= mm <= axis["physical_max_mm"]:
-                raise APIError("尺量位置超出该轴机械有效范围。")
-            sign, lead = body.get("sign"), body.get("lead")
-            if type(sign) is not int or sign not in (-1, 1) or lead not in (2, 4) or isinstance(lead, bool):
-                raise APIError("请确认前进方向和每圈 2 或 4 mm 的导程。")
             if body.get("confirmed") is not True:
                 raise APIError("必须确认这是当前实测位置。")
-            self.pending = (op, {"axis": axis["id"], "mm": mm, "sign": sign,
-                                 "lead": lead, "confirmed": True}, client)
+            if "positions" in body:
+                positions = body["positions"]
+                if not isinstance(positions, list) or len(positions) != 3 or not all(isinstance(item, dict) for item in positions):
+                    raise APIError("请提供三个轴的位置。")
+                settings = [self._anchor_settings(item) for item in positions]
+                if {item["axis"] for item in settings} != {1, 2, 3}:
+                    raise APIError("每个轴须填写一次。")
+                self.pending = (op, {"positions": settings}, client)
+            else:
+                self.pending = (op, self._anchor_settings(body), client)
         elif op == "pump_start":
             if "pump_rates" not in self.state.get("capabilities", []):
                 raise APIError("请更新板端固件以支持两轴独立注射速率。")
@@ -311,6 +330,7 @@ class Controller:
             shorts = {a["id"] for a in self.state["axes"] if a["id"] != self.state["long_id"]}
             selected = set()
             clean = []
+            safe_distances = {}
             for item in items:
                 if not isinstance(item, dict):
                     raise APIError("注射参数无效。")
@@ -323,17 +343,50 @@ class Controller:
                     raise APIError("请确认推注方向并填写1.5–200mm的剩余行程。")
                 if not axis["anchored"] or axis["position_mm"] is None or not axis["min_mm"] <= axis["position_mm"] <= axis["max_mm"]:
                     raise APIError("两个短轴须先标定并进入安全区。")
-                flow = finite(item.get("flow_ml_min", 1.0), "注射速率")
+                planned = "segments" in item or "target_volume_ml" in item
+                flow = 1.0 if planned else finite(item.get("flow_ml_min", 1.0), "注射速率")
                 area = math.pi*(19.22/2)**2
                 rpm = flow*1000/area/axis["lead_mm"]
                 if not 0.1 <= rpm <= 2:
                     low, high = 0.1*axis["lead_mm"]*area/1000, 2*axis["lead_mm"]*area/1000
                     raise APIError(f"ID{axis['id']}速率须在{low:.4f}–{high:.4f}mL/min内（电机0.1–2rpm）。")
                 room = axis["max_mm"]-axis["position_mm"] if direction > 0 else axis["position_mm"]-axis["min_mm"]
-                if min(remaining-1, room-0.5) < 0.5:
+                safe_distances[axis['id']] = min(remaining-1, room-0.5)
+                if safe_distances[axis['id']] < 0.5:
                     raise APIError("剩余安全行程不足0.5mm。")
+                entry = {"axis":axis["id"], "direction":direction, "remaining_mm":remaining, "flow_ml_min":flow}
+                if planned:
+                    if "pump_segments" not in self.state["capabilities"]:
+                        raise APIError("请更新板端固件以支持分段注射。")
+                    segments = item.get("segments")
+                    if not isinstance(segments, list) or not 1 <= len(segments) <= 12:
+                        raise APIError("每轴须设置1–12段。")
+                    entry["segments"] = []
+                    for segment in segments:
+                        if not isinstance(segment, dict):
+                            raise APIError("注射分段格式无效。")
+                        distance = finite(segment.get("distance_mm"), "分段距离")
+                        rate = finite(segment.get("flow_ml_min"), "分段速率")
+                        if distance < 0.5 or not 0.1 <= rate*1000/area/axis["lead_mm"] <= 2:
+                            raise APIError("每段至少0.5mm，且注射速率须对应0.1–2rpm。")
+                        entry["segments"].append({"distance_mm":distance,"flow_ml_min":rate})
+                    total = sum(s["distance_mm"] for s in entry["segments"])
+                    if total > safe_distances[axis['id']]:
+                        raise APIError("分段总距离不得超过安全行程。")
+                    if "target_volume_ml" in item:
+                        volume = finite(item["target_volume_ml"], "注射体积")
+                        if abs(total - volume*1000/area) > 0.000001:
+                            raise APIError("分段距离之和须等于体积换算距离。")
+                    entry["target_volume_ml"] = total*area/1000
+                    entry["flow_ml_min"] = entry["segments"][0]["flow_ml_min"]
                 selected.add(axis["id"])
-                clean.append({"axis":axis["id"], "direction":direction, "remaining_mm":remaining, "flow_ml_min":flow})
+                clean.append(entry)
+            if any("segments" in entry for entry in clean):
+                for entry in clean:
+                    if "segments" not in entry:
+                        distance = safe_distances[entry['axis']]
+                        entry['segments'] = [{'distance_mm': distance, 'flow_ml_min': entry['flow_ml_min']}]
+                        entry['target_volume_ml'] = distance*area/1000
             self.cancel_requested = False
             self.pending = (op, {"items": clean, "confirmed": True}, client)
         elif op in ("move_group", "reset_positions"):
@@ -418,26 +471,40 @@ class Controller:
     def _position_binding(self):
         return getattr(self.transport, 'identity', None) or {"port": self.state.get('port')}
 
-    def _mark_positions_pending(self, reason):
-        if self.saved_positions and self.saved_positions.get('reliable'):
+    def _mark_positions_pending(self, reason, force=False):
+        if self.saved_positions and (self.saved_positions.get('reliable') or force):
             data = dict(self.saved_positions, reliable=False, reason=reason)
             if self.position_path:
                 from .position_store import write
                 write(self.position_path, data)
             self.saved_positions = data
 
-    def _save_positions(self, axes=None):
-        from .position_store import checkpoint, write
-        axes = axes if axes is not None else self.state['axes']
-        if not any(a.get('anchored') for a in axes):
-            return
-        data = checkpoint(axes, self.state['long_id'], self._position_binding())
-        previous = self.saved_positions
-        if previous and all(previous.get(k)==data.get(k) for k in ('axes','long_id','binding','reliable')):
-            return
-        if self.position_path:
-            write(self.position_path, data)
-        self.saved_positions = data
+    def _save_positions(self, axes=None, reference_reason=None):
+        from .position_store import checkpoint, validate, write
+        with self.mutex:
+            if self.state['estop_latched'] and not reference_reason:
+                return
+            axes = axes if axes is not None else self.state['axes']
+            if not any(a.get('anchored') for a in axes):
+                return
+            data = checkpoint(axes, self.state['long_id'], self._position_binding())
+            if reference_reason:
+                data.update(reliable=False, reason=reference_reason)
+            previous = self.saved_positions or {}
+            geometry = {}
+            if all(previous.get(k) == data[k] for k in ('binding', 'long_id')):
+                geometry.update(previous.get('geometry', {}))
+                for axis in previous['axes']:
+                    geometry[str(axis['id'])] = {k: axis[k] for k in ('forward_sign', 'lead_mm')}
+            for axis in data['axes']:
+                geometry[str(axis['id'])] = {k: axis[k] for k in ('forward_sign', 'lead_mm')}
+            data['geometry'] = geometry
+            validate(data)
+            if not reference_reason and all(previous.get(k)==data.get(k) for k in ('axes','long_id','binding','reliable','geometry')):
+                return
+            if self.position_path:
+                write(self.position_path, data)
+            self.saved_positions = data
 
     def _invalidate_positions(self):
         for axis in self.state["axes"]:
@@ -506,6 +573,18 @@ class Controller:
         self.needs_lock = False
         self.next_connect = self.clock() + 2.0
 
+    def _restore_checkpoint(self, saved):
+        if self.emergency_pending or self.cancel_requested:
+            raise DeviceError('位置恢复已取消。')
+        self._apply_device_state(self.transport.request('configure', {
+            'ids': [1, 2, 3], 'long_id': saved['long_id'], 'confirmed': True}))
+        for axis in saved['axes']:
+            if self.emergency_pending or self.cancel_requested:
+                raise DeviceError('位置恢复已取消。')
+            self._apply_device_state(self.transport.request('anchor', {
+                'axis': axis['id'], 'mm': axis['position_mm'], 'sign': axis['forward_sign'],
+                'lead': axis['lead_mm'], 'confirmed': True}))
+
     def _connect(self):
         with self.mutex:
             self.state["connecting"] = True
@@ -518,12 +597,32 @@ class Controller:
             self._apply_device_state(value)
             with self.mutex:
                 self.transport = transport
-                self.state.update(connected=True, connecting=False, operation=None, port=transport.port,
+                self.state.update(connected=True, port=transport.port,
                                   session=transport.session, device=transport.device, last_error=None)
                 self._invalidate_positions()
+                if self.emergency_pending:
+                    return
                 self.cancel_requested = False
                 self.next_status = self.clock() + 1.0
-                self._event("info", "ESP32 已连接，所有轴保持锁定；请确认机号和当前尺量位置。")
+                saved = self.saved_positions
+                restore = (self.restore_on_startup and not self.state['estop_latched']
+                           and saved and saved.get('reliable') and saved.get('binding') == self._position_binding())
+                self.restore_on_startup = False
+            if restore:
+                try:
+                    self._restore_checkpoint(saved)
+                except Exception as exc:
+                    with self.mutex:
+                        self.state['connecting'] = False
+                    self._failed(exc)
+                    return
+            with self.mutex:
+                if self.emergency_pending:
+                    self._invalidate_positions()
+                    return
+                self.state.update(connecting=False, operation=None)
+                self._event('info', '已采用上次保存的位置；可在标定面板重新设置。' if restore else
+                            'ESP32 已连接，请确认机号和当前尺量位置。')
         except Exception as exc:
             if self.emergency_pending:
                 self._failed(exc)
@@ -571,8 +670,10 @@ class Controller:
 
     def _finish_emergency(self):
         confirmed = False
+        stopped_axes = []
         try:
             result = self.transport.finish_emergency()
+            stopped_axes = result.get('stopped_axes') or []
             confirmed = result.get("confirmed") is True
             details = result.get("details", [])
             if details:
@@ -581,6 +682,11 @@ class Controller:
         except Exception:
             message = "急停反馈未确认，请切断电机电源。"
         with self.mutex:
+            if stopped_axes:
+                try:
+                    self._save_positions(stopped_axes, '急停后编码器静止读数（仅供重新尺量校准）')
+                except (OSError, ValueError, TypeError, KeyError, AttributeError):
+                    self._event('error', '无法保存急停位置参考。')
             self._drop_connection()
             self.emergency_pending = False
             self.cancel_requested = self.disconnect_requested = False
@@ -723,10 +829,12 @@ class Controller:
                         raise
                     return
                 if op == 'restore_positions':
-                    self._apply_device_state(self.transport.request('configure', {'ids':[1,2,3], 'long_id':args['long_id'], 'confirmed':True}))
-                    for axis in args['axes']:
-                        self._apply_device_state(self.transport.request('anchor', {'axis':axis['id'], 'mm':axis['position_mm'],
-                            'sign':axis['forward_sign'], 'lead':axis['lead_mm'], 'confirmed':True}))
+                    self._restore_checkpoint(args)
+                elif op == "anchor" and "positions" in args:
+                    for settings in args["positions"]:
+                        if self.emergency_pending or self.cancel_requested:
+                            raise DeviceError("三轴标定已取消。")
+                        self._apply_device_state(self.transport.request("anchor", settings))
                 else:
                     if op in ('move_continuous','reset_positions','pump_start'):
                         self.state['job'] = {'id':uuid.uuid4().hex, 'kind':'pump' if op=='pump_start' else 'reset_continuous',
@@ -756,6 +864,9 @@ class Controller:
                                              "owner": owner, "members": copy.deepcopy(pump["members"]), "error": None}
                         self.next_status = 0.0
                         self._event("info", "两支注射器开始恒速推进：" + "；".join(f"ID{m['axis']} {m['flow_ml_min']:g}mL/min" for m in pump["members"]))
+                    elif op == "anchor" and "positions" in args:
+                        self._save_positions()
+                        self._event("info", "已建立并保存三轴位置基准。")
                     elif op == 'restore_positions':
                         self._save_positions()
                         self._event('info', '已恢复保存的位置、方向和导程；未发送运动指令。')

@@ -19,6 +19,7 @@
   let localOperation = null;
   let lastEventSignature = "";
   let lastSession = null;
+  const editedAnchorPositions = new Set();
   let toastTimer;
   const localEvents = [];
 
@@ -109,9 +110,11 @@
     if (lastSession !== null && state.session !== lastSession) {
       setupManuallyOpened = true;
       localOperation = null;
+      editedAnchorPositions.clear();
       for (const id of [1, 2, 3]) {
         $(`anchor-mm-${id}`).value = "";
-        $(`anchor-confirm-${id}`).checked = false;
+        $(`anchor-sign-${id}`).value = "";
+        $(`anchor-lead-${id}`).value = "";
         $(`pump-remaining-${id}`).value = "";
         $(`pump-direction-${id}`).value = "";
         $("pump-confirm").checked = false;
@@ -171,12 +174,13 @@
 
       const calibration = document.createElement("div");
       calibration.className = "calibration-card";
-      calibration.innerHTML = `<div class="calibration-title"><strong id="calibration-name-${id}"></strong><span id="anchor-status-${id}">未标定</span></div><div class="calibration-input-row"><label class="input-label" for="anchor-mm-${id}">当前尺量位置<div class="input-with-unit"><input id="anchor-mm-${id}" type="number" step="0.1" min="20" inputmode="decimal" placeholder="请实测后填写" autocomplete="off"><span>mm</span></div></label><button class="button button-outline button-small" id="anchor-${id}" type="button" disabled>建立基准</button></div><div class="calibration-assumptions"><span>前进方向：反转（−1）</span><span>导程：4 mm / 圈</span></div><label class="checkbox-label calibration-confirm"><input id="anchor-confirm-${id}" type="checkbox"><span>已尺量，并确认方向与导程</span></label>`;
+      calibration.innerHTML = `<div class="calibration-title"><strong id="calibration-name-${id}"></strong><span id="anchor-status-${id}">未标定</span></div><div class="calibration-input-row"><label class="input-label" for="anchor-mm-${id}">当前尺量位置<div class="input-with-unit"><input id="anchor-mm-${id}" type="number" step="0.1" min="20" inputmode="decimal" placeholder="请实测后填写" autocomplete="off"><span>mm</span></div></label></div><div class="calibration-assumptions"><details><summary>方向与导程（沿用既有设置）</summary><label>前进方向 <select id="anchor-sign-${id}"><option value="">沿用（默认反转）</option><option value="-1">反转（−1）</option><option value="1">正转（+1）</option></select></label><label>导程 <select id="anchor-lead-${id}"><option value="">沿用（默认 4 mm / 圈）</option><option value="4">4 mm / 圈</option><option value="2">2 mm / 圈</option></select></label></details></div>`;
       $("calibration-grid").append(calibration);
       const pumpCard = document.createElement("div");
       pumpCard.className = "calibration-card";
       pumpCard.id = `pump-card-${id}`;
       pumpCard.innerHTML = `<strong id="pump-name-${id}">ID ${id}</strong><label class="input-label">注射速率（mL/min）<input id="pump-flow-${id}" type="number" min="0.01" step="0.01" value="1"></label><small id="pump-rate-${id}"></small><label class="input-label">推动注射器的方向<select id="pump-direction-${id}"><option value="">请选择实际推注方向</option><option value="1">前进（坐标增大）</option><option value="-1">后退（坐标减小）</option></select></label><label class="input-label">推杆实际剩余可推距离（mm）<input id="pump-remaining-${id}" type="number" min="1.5" max="200" step="0.1" placeholder="尺量后填写"></label>`;
+      pumpCard.innerHTML += `<label class="checkbox-label"><input type="checkbox" id="pump-plan-${id}"><span>按距离分段调速</span></label><label class="input-label" id="pump-plan-input-${id}" hidden>每行填写距离（mm）、速率（mL/min）<textarea id="pump-segments-${id}" rows="3" placeholder="2, 0.5&#10;3, 1"></textarea></label>`;
       $("pump-inputs").append(pumpCard);
       const resetCard = document.createElement("div");
       resetCard.className = "calibration-card";
@@ -184,6 +188,9 @@
       $("reset-inputs").append(resetCard);
       $(`reset-target-${id}`).addEventListener("input", () => { $("reset-confirm").checked = false; render(); });
       $(`pump-flow-${id}`).addEventListener("input", () => { $("pump-confirm").checked = false; render(); });
+      for (const field of ["plan", "segments"]) {
+        $(`pump-${field}-${id}`).addEventListener("input", () => { $("pump-confirm").checked = false; render(); });
+      }
       $(`pump-direction-${id}`).addEventListener("change", () => { $("pump-confirm").checked = false; render(); });
       $(`pump-remaining-${id}`).addEventListener("input", () => { $("pump-confirm").checked = false; render(); });
 
@@ -197,8 +204,7 @@
       $(`target-${id}`).addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); if (!$(`move-${id}`).disabled) move(id); } });
       $(`back-${id}`).addEventListener("click", () => jog(id, -1));
       $(`forward-${id}`).addEventListener("click", () => jog(id, 1));
-      $(`anchor-confirm-${id}`).addEventListener("change", render);
-      $(`anchor-${id}`).addEventListener("click", () => anchor(id));
+      $(`anchor-mm-${id}`).addEventListener("input", () => editedAnchorPositions.add(id));
       $(`calibrate-${id}`).addEventListener("click", () => { openSetup(); $(`anchor-mm-${id}`).focus(); });
     }
   }
@@ -285,32 +291,56 @@
         const text = $(`pump-remaining-${axis.id}`).value.trim();
         const direction = Number($(`pump-direction-${axis.id}`).value);
         if (!text || !Number.isFinite(Number(text)) || ![-1,1].includes(direction)) throw new Error("请填写两个短轴的推注方向与实际剩余行程。");
-        const flow = Number($(`pump-flow-${axis.id}`).value);
-        const rpm = flow*1000/(Math.PI*(19.22/2)**2)/axis.lead_mm;
-        if (!Number.isFinite(flow) || rpm < 0.1 || rpm > 2) throw new Error(`请填写ID${axis.id}允许范围内的注射速率。`);
-        return {axis:axis.id, direction, remaining_mm:Number(text), flow_ml_min:flow};
+        const item = {axis:axis.id, direction, remaining_mm:Number(text)};
+        const checkRate = flow => {
+          const rpm = flow*1000/(Math.PI*(19.22/2)**2)/axis.lead_mm;
+          if (!(rpm >= 0.1 && rpm <= 2)) throw new Error(`请填写 ID${axis.id} 允许范围内的注射速率。`);
+          return flow;
+        };
+        if ($(`pump-plan-${axis.id}`).checked) {
+          const lines = $(`pump-segments-${axis.id}`).value.trim().split(/\r?\n/).filter(line => line.trim());
+          if (lines.length < 1 || lines.length > 12) throw new Error(`ID${axis.id} 须填写 1–12 段。`);
+          item.segments = lines.map((line, index) => {
+            const fields = line.split(/[,，]/);
+            const [distance, rate] = fields.map(Number);
+            if (fields.length !== 2 || !Number.isFinite(distance) || distance < 0.5) {
+              throw new Error(`ID${axis.id} 第 ${index+1} 段须填写距离和速率，距离至少 0.5 mm。`);
+            }
+            return {distance_mm:distance, flow_ml_min:checkRate(rate)};
+          });
+        } else {
+          item.flow_ml_min = checkRate(Number($(`pump-flow-${axis.id}`).value));
+        }
+        return item;
       });
-      if (await post("pump_start", {items, confirmed:true})) toast("已提交两轴独立速率的连续注射请求；请留意实际推注情况。");
+      if (await post("pump_start", {items, confirmed:true})) toast("已提交注射请求。");
     } catch (error) { showError(error.message); }
   }
 
-  async function anchor(id) {
-    if (!canControl() || !configured() || !$(`anchor-confirm-${id}`).checked) return;
-    const value = $(`anchor-mm-${id}`).value.trim();
-    const measured = Number(value);
-    const axis = axisFor(id);
-    const lower = axis.physical_min_mm ?? 20;
-    const upper = axis.physical_max_mm ?? (axis.max_mm + 10);
-    if (!value || !Number.isFinite(measured) || measured < lower || measured > upper) {
-      showError(`请输入 ${lower}–${upper} mm 内的实际尺量位置；不要使用历史记录代替测量。`);
+  async function anchorAll() {
+    if (!canControl() || !configured() || !$("anchor-confirm").checked) return;
+    if (state.supports_batch_anchor !== true) {
+      showError("当前运行的电机网页服务未加载三轴标定功能。请退出旧服务，重新启动后刷新页面。");
       return;
     }
-    const result = await post("anchor", { axis: id, mm: measured, sign: -1, lead: 4, confirmed: true });
-    if (result) {
-      if (!axisFor(id).anchored) localOperation = { kind: "anchor", axis: id, started: Date.now() };
-      toast("标定请求已提交，等待稳定编码器反馈。");
-      render();
+    const positions = [];
+    for (const id of [1, 2, 3]) {
+      const input = $(`anchor-mm-${id}`);
+      const axis = axisFor(id);
+      const lower = axis.physical_min_mm ?? 20;
+      const upper = axis.physical_max_mm ?? (axis.max_mm + 10);
+      const measured = Number(input.value);
+      if (!input.value.trim() || !finite(measured) || measured < lower || measured > upper) {
+        showError(`ID${id} 请输入 ${lower}–${upper} mm 内的实测位置。`);
+        input.focus();
+        return;
+      }
+      const settings = {axis:id, mm:measured};
+      if (["-1", "1"].includes($(`anchor-sign-${id}`).value)) settings.sign = Number($(`anchor-sign-${id}`).value);
+      if (["2", "4"].includes($(`anchor-lead-${id}`).value)) settings.lead = Number($(`anchor-lead-${id}`).value);
+      positions.push(settings);
     }
+    if (await post("anchor", {positions, confirmed:true})) toast("已提交三轴位置，等待编码器确认。");
   }
 
   function openSetup() {
@@ -357,7 +387,7 @@
     const pumpReady = shorts.length === 2 && shorts.every(a => a.anchored && finite(a.position_mm) && a.position_mm >= a.min_mm && a.position_mm <= a.max_mm);
     $("pump-start").disabled = !enabled || !pumpCapable || !pumpReady || !$("pump-confirm").checked;
     $("pump-confirm").disabled = !enabled || !pumpCapable || !pumpReady;
-    $("pump-hint").textContent = !pumpCapable ? "连接支持独立注射速率的固件后可用。" : !pumpReady ? "请先尺量标定两个短轴并进入安全区。" : "分别设置A、B速率（1mL/min为1倍）、剩余行程和方向；任一轴到达行程后两轴一起停止。";
+    $("pump-hint").textContent = !pumpCapable ? "连接支持注射的固件后可用。" : !pumpReady ? "请先建立两个短轴的位置基准并进入安全区。" : "默认恒速推进。可为 A、B 分别开启分段调速。";
     $("ownership-banner").hidden = !live || Boolean(controlled);
     $("ownership-description").textContent = state.owner ? "另一页面正在控制设备。请在原页面停止并退出后再获取控制权。" : "获取控制权后才能连接、标定和移动。";
     $("claim-button").disabled = requestInFlight || Boolean(state.owner && !controlled);
@@ -386,7 +416,13 @@
       $(`reset-target-${id}`).min = axis.min_mm;
       $(`reset-target-${id}`).max = axis.max_mm;
       $(`pump-name-${id}`).textContent = `${name} · ID ${id}`;
-      $(`pump-flow-${id}`).disabled = !enabled || !known;
+      const plan = $(`pump-plan-${id}`);
+      const hasSegments = state.capabilities?.includes("pump_segments");
+      if (!hasSegments) plan.checked = false;
+      plan.disabled = !enabled || !known || !hasSegments;
+      $(`pump-plan-input-${id}`).hidden = !plan.checked;
+      $(`pump-segments-${id}`).disabled = plan.disabled;
+      $(`pump-flow-${id}`).disabled = !enabled || !known || plan.checked;
       const flow = Number($(`pump-flow-${id}`).value);
       const area = Math.PI*(19.22/2)**2;
       const lead = axis.lead_mm;
@@ -395,7 +431,7 @@
         const high = Math.floor(2*lead*area/1000*100)/100;
         $(`pump-flow-${id}`).min = low;
         $(`pump-flow-${id}`).max = high;
-        $(`pump-rate-${id}`).textContent = `可设 ${low}–${high} mL/min · ${flow.toFixed(2)}倍 · ${(flow*1000/area/lead).toFixed(6)} rpm`;
+        $(`pump-rate-${id}`).textContent = `可设 ${low}–${high} mL/min` + (plan.checked ? "" : ` · ${flow.toFixed(2)}倍 · ${(flow*1000/area/lead).toFixed(6)} rpm`);
       } else $(`pump-rate-${id}`).textContent = "以1mL/min为1倍；标定导程后显示可用范围。";
       $(`pump-direction-${id}`).disabled = !enabled || !known;
       $(`pump-remaining-${id}`).disabled = !enabled || !known;
@@ -453,15 +489,24 @@
       $(`calibrate-${id}`).disabled = working || requestInFlight;
       $(`anchor-mm-${id}`).disabled = !enabled || !configured();
       $(`anchor-mm-${id}`).max = physicalMax;
-      $(`anchor-confirm-${id}`).disabled = !enabled || !configured();
-      $(`anchor-${id}`).disabled = !enabled || !configured() || !$(`anchor-confirm-${id}`).checked;
+      $(`anchor-sign-${id}`).disabled = $(`anchor-lead-${id}`).disabled = !enabled || !configured();
+      const savedAxis = state.saved_positions?.axes.find(a => a.id === id);
+      const anchorInput = $(`anchor-mm-${id}`);
+      if (!editedAnchorPositions.has(id)) {
+        const savedPosition = savedAxis?.position_mm;
+        const defaultValue = finite(savedPosition) && savedPosition >= (axis.physical_min_mm ?? 20) && savedPosition <= physicalMax
+          ? String(savedPosition) : "";
+        if (anchorInput.value !== defaultValue) anchorInput.value = defaultValue;
+      }
+      anchorInput.title = savedAxis && !state.saved_positions.reliable ? "上次记录仅供参考，请核对实测位置。" : "";
       $(`anchor-status-${id}`).textContent = localOperation?.kind === "anchor" && localOperation.axis === id ? "正在核对…" : known ? "已建立基准" : "未标定";
-      $(`anchor-${id}`).textContent = known ? "重新标定" : "建立基准";
       updateSpeed(id);
     }
+    $("anchor-confirm").disabled = !enabled || !configured();
+    $("anchor-all").disabled = !enabled || !configured() || !$("anchor-confirm").checked;
     $("move-group").disabled = !enabled || !state.capabilities?.includes("continuous_move") || [1,2,3].filter(id => $(`group-${id}`).checked).length < 2;
     const saved = state.saved_positions;
-    $("saved-position-state").textContent = saved ? `${saved.reliable ? '已保存可靠位置' : '旧位置仅供核对，不能恢复'} · ${new Date(saved.saved_at).toLocaleString()} · ${saved.axes.map(a=>`ID${a.id}: ${a.position_mm.toFixed(3)} mm`).join(' / ')} · ${saved.reason}` : '尚无保存位置；首次尺量建立基准后自动保存。';
+    $("saved-position-state").textContent = saved ? `${saved.reliable ? '已保存可靠位置' : '位置参考，不能恢复'} · ${new Date(saved.saved_at).toLocaleString()} · ${saved.axes.map(a=>`ID${a.id}: ${a.position_mm.toFixed(3)} mm`).join(' / ')} · ${saved.reason}` : '尚无保存位置；首次尺量建立基准后自动保存。';
     $("restore-positions").disabled = !enabled || !saved?.reliable;
     renderJob();
     renderEvents();
@@ -473,11 +518,11 @@
     if (!job) return;
     const labels = { queued: "等待执行", running: "运动中", moving: "运动中", stopping: "等待刹车及静止反馈", cancelling: "正在取消后续动作", completed: "已完成", complete: "已完成", done: "已完成", finished: "已完成", cancelled: "已停止", canceled: "已停止", stopped: "已停止后续动作", failed: "发生异常", error: "发生异常" };
     if (job.kind === "pump") {
-      $("job-title").textContent = "双注射器独立速率推进";
+      $("job-title").textContent = "双注射器恒速推进";
       $("job-state").textContent = labels[job.state] || "等待反馈";
       $("job-start").textContent = job.members.map(m => `ID${m.axis}: ${mm(m.start_mm)}`).join(" / ");
       $("job-target").textContent = job.members.map(m => `ID${m.axis}: ${mm(m.end_mm)}`).join(" / ");
-      const progress = job.members.length ? Math.max(...job.members.map(m => m.progress || 0))*100 : 0;
+      const progress = job.members.length ? job.members.reduce((sum, member) => sum + (member.progress || 0), 0)/job.members.length*100 : 0;
       $("job-progress-label").textContent = `${Math.round(progress)}%`;
       $("job-progress-fill").style.width = `${progress}%`;
       $("job-detail").textContent = job.error || job.members.map(m => `ID${m.axis} · ${m.flow_ml_min ?? 1} mL/min · ${m.rpm.toFixed(6)} rpm · 估算 ${(m.volume_ml || 0).toFixed(3)} mL`).join("；");
@@ -562,6 +607,8 @@
   $("dismiss-error").addEventListener("click", () => { $("error-banner").hidden = true; });
   $("drive-restore-confirm").onchange = render;
   $("drive-restore").onclick = async () => { await post('restore_drives',{confirmed:$("drive-restore-confirm").checked}); $("drive-restore-confirm").checked=false; render(); };
+  $("anchor-confirm").addEventListener("change", render);
+  $("anchor-all").addEventListener("click", anchorAll);
   $("restore-positions").onclick = () => post("restore_positions");
   $("show-setup").addEventListener("click", openSetup);
   $("close-setup").addEventListener("click", () => { setupManuallyOpened = false; render(); });
@@ -572,7 +619,8 @@
     const result = await post("configure", { ids: [1, 2, 3], long_id: Number($("long-axis-id").value), confirmed: true });
     if (result) {
       if (state.configured !== true) localOperation = { kind: "configure", started: Date.now() };
-      for (const id of [1, 2, 3]) { $(`anchor-mm-${id}`).value = ""; $(`anchor-confirm-${id}`).checked = false; }
+      editedAnchorPositions.clear();
+      for (const id of [1, 2, 3]) { $(`anchor-mm-${id}`).value = ""; }
       toast("对应关系已提交，请等待确认后逐轴尺量标定。");
       render();
     }

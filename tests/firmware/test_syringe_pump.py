@@ -86,6 +86,49 @@ class PumpTests(unittest.TestCase):
         a,b=self.rpc.pump.members
         self.assertAlmostEqual(b['volume_ml']/a['volume_ml'],4,places=2)
         self.assertIn('到达设定行程',self.rpc.pump.result)
+    def test_segmented_axes_change_speed_and_finish_independently(self):
+        items = self.items()
+        plans = [((0.5, 1), (0.5, 2)), ((1.5, 0.5),)]
+        for item, plan in zip(items, plans):
+            item.update(flow_ml_min=plan[0][1],
+                        target_volume_ml=sum(d for d, _ in plan)*AREA_MM2/1000,
+                        segments=[dict(distance_mm=d, flow_ml_min=f) for d, f in plan])
+        self.call('pump_start', {'items': items, 'confirmed':True})
+        for _ in range(500):
+            self.clock.sleep_ms(250)
+            self.call('pump_heartbeat', {})
+            if not self.rpc.pump.active:
+                break
+            if self.rpc.pump.members[0]['done']:
+                self.assertNotIn(2, self.bus.rates)
+                self.assertIn(3, self.bus.rates)
+        self.assertIn('均已到达设定行程', self.rpc.pump.result)
+        self.assertFalse(self.bus.rates)
+        self.assertEqual([i for i, _ in self.bus.starts], [2, 3, 2])
+        for member, item in zip(self.rpc.pump.members, items):
+            self.assertAlmostEqual(member['volume_ml'], item['target_volume_ml'], delta=0.02)
+
+    def test_estop_returns_new_encoder_position_before_lock(self):
+        self.start()
+        self.clock.sleep_ms(1000)
+        result = self.rpc.emergency_stop()
+        self.assertTrue(result['confirmed'])
+        self.assertEqual([a['id'] for a in result['stopped_axes']], [2, 3])
+        for axis in result['stopped_axes']:
+            self.assertAlmostEqual(axis['position_mm'], 100 + MM_MIN/60, places=3)
+        self.assertTrue(all(a.reference is None for a in self.rpc.controller.axes.values()))
+
+    def test_segmented_invalid_second_axis_prevents_all_motion(self):
+        items = self.items()
+        for item in items:
+            item.update(flow_ml_min=1, target_volume_ml=AREA_MM2/1000,
+                        segments=[dict(distance_mm=1, flow_ml_min=1)])
+        for distance in (0.3, 2, 20):
+            items[1]['segments'][0]['distance_mm'] = distance
+            with self.assertRaises(ValueError):
+                self.rpc.pump.start(items, 1, True)
+            self.assertFalse(self.bus.starts)
+
     def test_speed_range_uses_each_axes_lead(self):
         self.call('anchor',{'axis':3,'mm':100,'sign':-1,'lead':2,'confirmed':True})
         items=self.items();items[1]['flow_ml_min']=2

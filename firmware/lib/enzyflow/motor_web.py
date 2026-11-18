@@ -236,11 +236,15 @@ class MotorRPC:
                     details.append({'stage':'disable_fallback','error':str(exc)})
             self.pump.stop_fault = self.reset.stop_fault = bool(failures)
             self.pump.result = '急停已失能锁定' if not failures else '急停未确认，请切断电机电源'
+            stopped_axes = [a for a in self.state()['axes']
+                            if a['id'] in first and a['id'] not in failures and a['anchored']
+                            and a['position_mm'] is not None
+                            and a['physical_min_mm'] <= a['position_mm'] <= a['physical_max_mm']]
             self.controller.lock()
             self.expected_counts = {}
             return {'event': 'emergency_stopped', 'session': self.session,
                     'confirmed': not failures, 'failed_axes': failures,
-                    'details':details, 'disabled':not failures}
+                    'details':details, 'disabled':not failures, 'stopped_axes':stopped_axes}
         finally:
             if embedded:
                 micropython.kbd_intr(3)
@@ -269,7 +273,7 @@ class MotorRPC:
             })
         return {
             'protocol': PROTOCOL, 'axes': axes,
-            'capabilities': ['recover', 'jog_group', 'emergency_stop'] + (['pump', 'pump_rates', 'continuous_reset', 'continuous_move', 'stop_preserve', 'drive_restore', 'graceful_shutdown'] if self.pump_available else []),
+            'capabilities': ['recover', 'jog_group', 'emergency_stop'] + (['pump', 'pump_rates', 'pump_segments', 'continuous_reset', 'continuous_move', 'stop_preserve', 'drive_restore', 'graceful_shutdown'] if self.pump_available else []),
             'pump': self.pump.state(),
             'driver_states':self.driver_states, 'reset': self.reset.state(), 'stopped_axes': self.stopped_axes, 'checkpoint_error':self.checkpoint_error,
             'counts': {str(i): self.counts[i] for i in self.counts},
