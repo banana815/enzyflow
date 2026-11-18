@@ -41,10 +41,15 @@ class LampTests(unittest.TestCase):
                       [[260,435.8],[810,546],[1130,610]],
                       [[260,546],[810,436],[1130,610]]):
             with self.assertRaises(ValueError):fit_lamp(self.snapshot(),pairs)
-    def test_no_dark_or_zero_reference_rejected(self):
-        p,r=self.result()
-        r.dark_profile=None
-        with self.assertRaisesRegex(ValueError,'暗场'):freeze_lamp(r,{'width':1280},Roi(0,0,1280,1),1)
+    def test_wavelength_fit_works_without_dark(self):
+        _,r=self.result()
+        r.dark_profile = r.dark_metadata = None
+        snap = freeze_lamp(r,{'width':1280},Roi(0,0,1280,1),1)
+        cal,report = fit_lamp(snap,[[260,436],[810,546],[1130,610]],[[100,404]])
+        self.assertIsNone(report['dark_id'])
+        self.assertAlmostEqual(cal.wavelength_at(100),404)
+
+    def test_zero_reference_rejected(self):
         p,r=self.result();r.zero_active=True
         with self.assertRaisesRegex(ValueError,'零参考'):freeze_lamp(r,{'width':1280},Roi(0,0,1280,1),1)
     def test_saturation_and_dark_only_rejected(self):

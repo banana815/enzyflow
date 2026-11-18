@@ -14,7 +14,7 @@ def read_profile(path, binding):
     path=Path(path)
     if not path.exists():
         return None
-    data=json.loads(path.read_text(),parse_constant=lambda _: (_ for _ in ()).throw(ValueError('非有限配置值')))
+    data=json.loads(path.read_text(encoding='utf-8'),parse_constant=lambda _: (_ for _ in ()).throw(ValueError('非有限配置值')))
     if data.get('schema')!=1:
         raise ValueError('不支持的光谱仪配置版本')
     if data.get('binding')!=binding:
@@ -53,13 +53,13 @@ def validate_settings(settings,binding):
         raise ValueError('保存的相机参数无效')
 
 
-def write_profile(path,data):
+def write_profile(path,data, *, keep_previous=True):
     path=Path(path)
     path.parent.mkdir(parents=True,exist_ok=True)
     payload=json.dumps(data,ensure_ascii=False,indent=2,allow_nan=False)
     tmp=path.with_suffix('.tmp')
-    tmp.write_text(payload)
-    if path.exists():
+    tmp.write_text(payload, encoding='utf-8')
+    if keep_previous and path.exists():
         previous=path.with_suffix('.previous.json')
         previous_tmp=previous.with_suffix('.tmp')
         previous_tmp.write_bytes(path.read_bytes())
@@ -71,7 +71,8 @@ def dark_matches(dark,binding,roi,processing,controls):
     if not dark:
         return False
     m=dark['metadata']
-    return (m['binding']==binding and m['roi']==roi and m['controls']==controls and
+    return (m['binding']==binding and (dark.get('image') or m['roi']==roi)
+            and m['controls']==controls and
             all(m['processing'][k]==processing[k] for k in ('linearize','gain_r','gain_g','gain_b')))
 
 
