@@ -19,6 +19,20 @@ python3 -m venv .venv
 
 电机控制、固件保护和光谱算法保持现有行为。校准与采集文件继续使用 `spectrometer/runtime/web/`，电机位置与运行状态仍在 `webcontrol/runtime/`；这些本机数据及虚拟环境不提交到 Git。原光谱仪 CLI 也继续保留。详细操作见[网页手册](docs/web-control.md)。
 
+## 在 macOS 上运行三轴电机控制台
+
+安装 Python 3.10 或更新版本，在 Mac 上进入项目目录并新建虚拟环境：
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r webcontrol/requirements-motor.txt
+./start-control.sh
+```
+
+接上已安装 Enzyflow 固件的 ESP32。控制台会打开 `http://127.0.0.1:8765/`，并识别符合设备 USB 身份的 `/dev/cu.*` 串口。若没有识别到，可运行 `.venv/bin/python -m serial.tools.list_ports -v` 检查 macOS 是否列出了 USB 串口。使用 Thonny 时，请先在 Thonny 中断开连接再打开控制台。
+
+若连接了多块支持的设备，可用 `.venv/bin/python -m webcontrol.server --serial-port /dev/cu.usbmodem101` 指定串口，将示例路径替换成列表中的实际路径。应先退出占用同一端口的控制台服务。也可运行 `./start-control.sh --demo --port 8767`，无需设备即可试用页面。首次换到 Mac 上使用时，按网页提示建立本机位置基准。
+
 ## USB 光谱仪网页功能
 
 现已整理为两步校准：①暗场本底扣除；②使用 `Archive/皓宇荧光灯.png`，冻结本机灯谱、对应436/546/610nm主峰并拟合波长，404nm可作独立验证。参考图为整数标注，不能直接使用图片像素或宣称亚纳米精度。

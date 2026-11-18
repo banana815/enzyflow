@@ -70,7 +70,7 @@ class LocalHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == "/api/health":
-            self._respond(200, {"app": "enzyflow-control", "version": 10,
+            self._respond(200, {"app": "enzyflow-control", "version": getattr(self.server, "api_version", 10),
                                 "service": self.server.service, "demo": self.server.demo})
             return
         if self.get_api(path):

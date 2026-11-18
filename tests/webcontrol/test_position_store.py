@@ -43,6 +43,13 @@ class PositionTests(fixtures.ControllerTests):
         saved = read(self.c.position_path)
         self.assertEqual([axis['position_mm'] for axis in saved['axes']], [130, 80, 90])
         self.assertEqual(self.jogs(), [])
+        self.post('configure', ids=[1, 2, 3], long_id=1, confirmed=True)
+        self.c.step()
+        self.post('anchor', axis=1, mm=131, confirmed=True)
+        self.c.step()
+        saved = read(self.c.position_path)
+        self.assertEqual([axis['id'] for axis in saved['axes']], [1])
+        self.assertEqual(saved['reference_positions'], {'2': 80, '3': 90})
     def test_position_write_failure_prevents_motion(self):
         self.ready()
         self.post('move',axis=1,target_mm=60,rpm=12)

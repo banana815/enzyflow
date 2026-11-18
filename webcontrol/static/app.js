@@ -491,14 +491,16 @@
       $(`anchor-mm-${id}`).max = physicalMax;
       $(`anchor-sign-${id}`).disabled = $(`anchor-lead-${id}`).disabled = !enabled || !configured();
       const savedAxis = state.saved_positions?.axes.find(a => a.id === id);
+      const olderPosition = state.saved_positions?.long_id === state.long_id
+        ? state.saved_positions?.reference_positions?.[id] : undefined;
       const anchorInput = $(`anchor-mm-${id}`);
       if (!editedAnchorPositions.has(id)) {
-        const savedPosition = savedAxis?.position_mm;
+        const savedPosition = savedAxis?.position_mm ?? olderPosition;
         const defaultValue = finite(savedPosition) && savedPosition >= (axis.physical_min_mm ?? 20) && savedPosition <= physicalMax
           ? String(savedPosition) : "";
         if (anchorInput.value !== defaultValue) anchorInput.value = defaultValue;
       }
-      anchorInput.title = savedAxis && !state.saved_positions.reliable ? "上次记录仅供参考，请核对实测位置。" : "";
+      anchorInput.title = finite(olderPosition) || (savedAxis && !state.saved_positions.reliable) ? "上次记录仅供参考，请核对实测位置。" : "";
       $(`anchor-status-${id}`).textContent = localOperation?.kind === "anchor" && localOperation.axis === id ? "正在核对…" : known ? "已建立基准" : "未标定";
       updateSpeed(id);
     }

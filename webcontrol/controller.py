@@ -492,15 +492,21 @@ class Controller:
                 data.update(reliable=False, reason=reference_reason)
             previous = self.saved_positions or {}
             geometry = {}
+            references = {}
             if all(previous.get(k) == data[k] for k in ('binding', 'long_id')):
                 geometry.update(previous.get('geometry', {}))
+                references.update(previous.get('reference_positions', {}))
                 for axis in previous['axes']:
                     geometry[str(axis['id'])] = {k: axis[k] for k in ('forward_sign', 'lead_mm')}
+                    references[str(axis['id'])] = axis['position_mm']
             for axis in data['axes']:
                 geometry[str(axis['id'])] = {k: axis[k] for k in ('forward_sign', 'lead_mm')}
+                references.pop(str(axis['id']), None)
             data['geometry'] = geometry
+            if references:
+                data['reference_positions'] = references
             validate(data)
-            if not reference_reason and all(previous.get(k)==data.get(k) for k in ('axes','long_id','binding','reliable','geometry')):
+            if not reference_reason and all(previous.get(k)==data.get(k) for k in ('axes','long_id','binding','reliable','geometry','reference_positions')):
                 return
             if self.position_path:
                 write(self.position_path, data)

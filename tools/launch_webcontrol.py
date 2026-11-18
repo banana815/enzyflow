@@ -27,6 +27,8 @@ def health(url):
 def validate_service(current, service, demo):
     if current and (current.get('service') != service or current.get('demo') != demo):
         raise RuntimeError('该端口已运行旧版控制台、其他设备服务或另一模拟模式；请先退出旧服务，或使用 --port 指定其他端口。')
+    if current and service == 'motor' and current.get('version') != 11:
+        raise RuntimeError('电机网页服务仍在运行旧版进程。请停止旧进程后重新运行 ./start-control.sh。')
 
 
 def main():
@@ -43,6 +45,8 @@ def main():
         args.port = default_port
     if args.handoff_thonny and args.service != 'motor':
         parser.error('--handoff-thonny 仅用于电机服务')
+    if args.handoff_thonny and not sys.platform.startswith('linux'):
+        parser.error('请先在 Thonny 中手动断开串口，再启动电机控制台。')
     if not 1024 <= args.port <= 65535:
         parser.error('端口必须为 1024–65535')
     url = 'http://127.0.0.1:%d/' % args.port
@@ -76,7 +80,8 @@ def main():
                 raise RuntimeError('控制服务未就绪，请查看启动日志。')
     print('Enzyflow '+label+'：'+url, flush=True)
     if not args.no_browser:
-        subprocess.Popen(['xdg-open', url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        opener = 'open' if args.service == 'motor' and sys.platform == 'darwin' else 'xdg-open'
+        subprocess.Popen([opener, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
 
 

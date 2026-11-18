@@ -14,6 +14,7 @@ from .http_common import LocalHTTPServer, LocalHandler, ROOT
 
 class LocalServer(LocalHTTPServer):
     service = "motor"
+    api_version = 11
     page = "index.html"
 
     def __init__(self, controller, port=8765, token=None):

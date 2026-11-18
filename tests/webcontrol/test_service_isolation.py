@@ -127,7 +127,9 @@ class LaunchIsolationTests(unittest.TestCase):
                         {'service': 'motor', 'demo': True}):
             with self.assertRaises(RuntimeError):
                 validate_service(current, 'motor', False)
-        validate_service({'service': 'motor', 'demo': False}, 'motor', False)
+        with self.assertRaises(RuntimeError):
+            validate_service({'service': 'motor', 'demo': False, 'version': 10}, 'motor', False)
+        validate_service({'service': 'motor', 'demo': False, 'version': 11}, 'motor', False)
         validate_service(None, 'spectrometer', False)
 
     def test_imports_do_not_require_the_other_device_stack(self):

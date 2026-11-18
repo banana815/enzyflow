@@ -12,7 +12,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / "firmware/lib"), str(ROOT / "tests/firmwar
 from enzyflow.motor_web import MotorRPC
 from test_motor_safety import FakeClock
 from test_motor_speed import SpeedBus
-from webcontrol.transport import ConnectionFailure, DeviceError, SerialTransport, esp32_ports
+from webcontrol.transport import ConnectionFailure, DeviceError, SerialTransport, esp32_ports, port_holder
 
 
 class PortDiscoveryTests(unittest.TestCase):
@@ -24,8 +24,27 @@ class PortDiscoveryTests(unittest.TestCase):
             ("/dev/ttyS0", 0x1A86, 0x7523),
             ("/dev/ttyUSB2", None, None),
         ]]
-        with patch("serial.tools.list_ports.comports", return_value=ports):
+        with patch("serial.tools.list_ports.comports", return_value=ports), patch("webcontrol.transport.sys.platform", "linux"):
             self.assertEqual(esp32_ports(), ["/dev/ttyACM0", "/dev/ttyUSB0"])
+
+    def test_macos_uses_only_matching_callout_ports(self):
+        ports = [SimpleNamespace(device=device, vid=vid, pid=pid) for device, vid, pid in [
+            ("/dev/cu.usbmodem101", 0x303A, 0x1001),
+            ("/dev/tty.usbmodem101", 0x303A, 0x1001),
+            ("/dev/cu.wchusbserial1420", 0x1A86, 0x7523),
+            ("/dev/cu.Bluetooth-Incoming-Port", None, None),
+            ("/dev/cu.OtherAdapter", 0x1A86, 0x9999),
+        ]]
+        with patch("serial.tools.list_ports.comports", return_value=ports), patch("webcontrol.transport.sys.platform", "darwin"):
+            self.assertEqual(esp32_ports(), ["/dev/cu.usbmodem101", "/dev/cu.wchusbserial1420"])
+
+    def test_macos_checks_both_serial_aliases_for_owners(self):
+        with patch("webcontrol.transport.sys.platform", "darwin"), \
+                patch("webcontrol.transport.os.path.exists", return_value=True), \
+                patch("webcontrol.transport.os.getpid", return_value=13), \
+                patch("webcontrol.transport.subprocess.run", return_value=SimpleNamespace(stdout="13\n42\n")) as run:
+            self.assertEqual(port_holder("/dev/cu.usbmodem101"), 42)
+        self.assertEqual(run.call_args.args[0][-2:], ["/dev/cu.usbmodem101", "/dev/tty.usbmodem101"])
 
     def test_multiple_candidates_are_not_opened(self):
         with patch("webcontrol.transport.esp32_ports", return_value=["/dev/ttyACM0", "/dev/ttyUSB1"]):

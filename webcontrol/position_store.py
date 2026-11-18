@@ -41,6 +41,13 @@ def validate(value):
             type(a['forward_sign']) is not int or a['forward_sign'] not in (-1, 1)):
             raise ValueError('位置记录超出机械范围或方向导程无效')
     geometry = value.get('geometry', {})
+    references = value.get('reference_positions', {})
+    if not isinstance(references, dict) or any(
+        ident not in ('1', '2', '3') or type(mm) not in (int, float) or
+        not 20 <= mm <= (320 if ident == str(value['long_id']) else 220)
+        for ident, mm in references.items()
+    ):
+        raise ValueError('历史参考位置无效')
     if not isinstance(geometry, dict) or any(
         ident not in ('1', '2', '3') or not isinstance(g, dict) or
         type(g.get('forward_sign')) is not int or g['forward_sign'] not in (-1, 1) or

@@ -10,6 +10,8 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import time
 import threading
 import uuid
@@ -28,14 +30,31 @@ def esp32_ports():
         from serial.tools import list_ports
     except ImportError as exc:
         raise ConnectionFailure("缺少 pyserial，请使用项目启动入口或 Thonny 的 Python。") from exc
-    return sorted(p.device for p in list_ports.comports()
+    prefixes = ("/dev/cu.",) if sys.platform == "darwin" else ("/dev/ttyACM", "/dev/ttyUSB")
+    return sorted({p.device for p in list_ports.comports()
                   if (p.vid == 0x303A or (p.vid, p.pid) == (0x1A86, 0x7523))
-                  and p.device.startswith(("/dev/ttyACM", "/dev/ttyUSB")))
+                  and p.device.startswith(prefixes)})
 
 
 def port_holder(port):
     """Return a PID already owning the device, without reading process data."""
     destination = os.path.realpath(port)
+    if sys.platform == "darwin":
+        dial_in = "/dev/tty." + Path(port).name.removeprefix("cu.")
+        devices = [destination]
+        if os.path.exists(dial_in):
+            devices.append(dial_in)
+        try:
+            result = subprocess.run(
+                ["/usr/sbin/lsof", "-t", "--", *devices],
+                capture_output=True, text=True, timeout=2, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return next((int(pid) for pid in result.stdout.split()
+                     if pid.isdigit() and int(pid) != os.getpid()), None)
+    if not sys.platform.startswith("linux"):
+        return None
     for process in Path("/proc").iterdir():
         if not process.name.isdigit() or int(process.name) == os.getpid():
             continue
