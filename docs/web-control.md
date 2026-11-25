@@ -210,6 +210,10 @@ cd ~/Work/enzyflow
 <a id="usb-spectrometer-web"></a>
 ## USB 光谱仪网页功能（2026-11-11）
 
+**macOS：** 先运行 `.venv/bin/python -m pip install -r webcontrol/requirements-spectrometer.txt`，然后运行 `open -a Terminal ./start-spectrometer-macos.command`。在 [控制台](http://127.0.0.1:8766/) 扫描并连接 USB-ZH (`0c68:6464`) 时，在系统弹窗中允许 Apple“终端”使用相机。若曾拒绝，可在“系统设置 → 隐私与安全性 → 相机”开启“终端”。Otty 1.6.5 的签名缺少相机 entitlement，系统不会为它弹出授权请求；该命令即使从 Otty 输入，也会在 Apple“终端”中启动服务。旧服务占用 8766 时，先停止旧光谱仪服务；也可直接在 Apple“终端”里运行 `./start-spectrometer-macos.command --port 8876`。
+
+macOS 使用 AVFoundation 采集，优先请求 1280×720；校准始终绑定实际采集分辨率，不缩放画面、不套用 Linux 的标定。固定手动曝光由同一 USB 设备的 UVC 控制接口设置（100 µs），并读回验证。若曝光控制不能验证，连接会失败，不会用自动曝光数据冒充校准数据。
+
 **当前持久化规则（覆盖下文早期的“重连重采”说明）：** 同一台光谱仪完成一次暗场和波长标定后自动保存；重启/重连自动恢复ROI、曝光、处理设置及匹配的底噪，波长标定也自动加载，无需重复选峰。文件位于 `spectrometer/runtime/web/instrument-profile.json` 与 `calibration.json`，前者更新时保留一份 `.previous.json` 备份。
 
 改变ROI/曝光后旧底噪只暂停使用、不删除；“恢复校准时设置”可恢复该次暗场的采集条件并继续使用。平均帧数、平滑、峰值保持不改变暗场原始强度算法，因此不会要求重采；零参考仍为临时状态。显式“清除已存暗场”会清除默认配置中的暗场（波长标定不变）；采集未完成时取消或断开，保留上次成功保存的暗场。设置不匹配、文件损坏或相机参数无法恢复时不套用底噪，并显示原因。若改变光路、设备或长期温漂导致校准失准，需重新校准。

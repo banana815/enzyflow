@@ -1,5 +1,6 @@
 """Device services must remain usable without the other device or dependencies."""
 from http.client import HTTPConnection
+from io import StringIO
 import json
 from pathlib import Path
 import subprocess
@@ -7,8 +8,9 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
-from tools.launch_webcontrol import validate_service
+from tools.launch_webcontrol import open_browser, validate_service
 from webcontrol.controller import Controller
 from webcontrol.demo import DemoTransport
 from webcontrol.server import LocalServer
@@ -122,6 +124,22 @@ class ServiceIsolationTests(unittest.TestCase):
 
 
 class LaunchIsolationTests(unittest.TestCase):
+    def test_browser_opener_is_selected_by_platform(self):
+        url = 'http://127.0.0.1:8766/'
+        for platform, opener in (('darwin', 'open'), ('linux', 'xdg-open')):
+            with self.subTest(platform=platform), \
+                    patch('tools.launch_webcontrol.sys.platform', platform), \
+                    patch('tools.launch_webcontrol.subprocess.Popen') as launch:
+                open_browser(url)
+                self.assertEqual(launch.call_args.args[0], [opener, url])
+
+    def test_missing_browser_opener_prints_manual_url(self):
+        url = 'http://127.0.0.1:8766/'
+        with patch('tools.launch_webcontrol.subprocess.Popen', side_effect=FileNotFoundError), \
+                patch('sys.stderr', new_callable=StringIO) as stderr:
+            open_browser(url)
+        self.assertIn(url, stderr.getvalue())
+
     def test_launcher_rejects_legacy_or_wrong_device_or_demo(self):
         for current in ({'demo': False}, {'service': 'spectrometer', 'demo': False},
                         {'service': 'motor', 'demo': True}):

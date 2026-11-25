@@ -42,6 +42,9 @@ def eligible(device):
     if windows_camera:
         return (device.capture and device.vid_pid.lower() == USB_ID
                 and device.driver == 'directshow' and bool(device.by_id))
+    if sys.platform == 'darwin':
+        return (device.capture and device.vid_pid.lower() == USB_ID
+                and device.driver == 'avfoundation' and bool(device.by_id))
     return (device.capture and device.vid_pid.lower() == USB_ID
             and re.fullmatch(r'/dev/video\d+', device.path) is not None
             and device.driver == 'uvcvideo')
@@ -56,6 +59,14 @@ def select_camera(devices, selected):
     if len(matches) != 1:
         raise ValueError('光谱仪身份缺失、改变或存在多个相同设备；请重新扫描选择。')
     return matches[0]
+
+
+def macos_backend():
+    try:
+        from . import macos_camera
+    except ImportError as exc:
+        raise RuntimeError('macOS 光谱仪依赖未安装，请安装 webcontrol/requirements-spectrometer.txt') from exc
+    return macos_camera
 
 
 class Spectrometer:
@@ -107,7 +118,7 @@ class Spectrometer:
     def devices(self):
         if self.demo:
             return [dict(path='synthetic', name='合成光谱（演示）', vid_pid='demo', by_id='synthetic', eligible=True)]
-        camera = windows_camera or modules()[0]
+        camera = macos_backend() if sys.platform == 'darwin' else windows_camera or modules()[0]
         return [dict(d.to_dict(), eligible=eligible(d),
                      capture_modes=list(windows_camera.CAPTURE_MODES) if windows_camera and eligible(d) else [])
                 for d in camera.enumerate_devices()]
@@ -180,15 +191,19 @@ class Spectrometer:
                     calibration_dir = self.data_dir / capture_mode
                 device_info = dict(source.info, **identity(device), node=device.path)
             else:
-                device = select_camera(camera.enumerate_devices(), selected)
+                capture_backend = macos_backend() if sys.platform == 'darwin' else camera
+                device = select_camera(capture_backend.enumerate_devices(), selected)
                 # Cross-process lock distinct from the ESP32 lock.
                 guard = open('/tmp/enzyflow-spectrometer.lock', 'a')
                 fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                # Use by-id when available; recheck its target before opening.
-                path = '/dev/v4l/by-id/' + device.by_id if device.by_id else device.path
-                if str(Path(path).resolve()) != device.path:
-                    raise ValueError('光谱仪节点已改变，请重新扫描')
-                source = camera.CameraSource(path)
+                if sys.platform == 'darwin':
+                    source = capture_backend.CameraSource(device)
+                else:
+                    # Use by-id when available; recheck its target before opening.
+                    path = '/dev/v4l/by-id/' + device.by_id if device.by_id else device.path
+                    if str(Path(path).resolve()) != device.path:
+                        raise ValueError('光谱仪节点已改变，请重新扫描')
+                    source = camera.CameraSource(path)
                 device_info = dict(source.info, **identity(device), node=device.path)
             processing = config.ProcessingConfig()
             processor = spectrum.SpectrumProcessor(processing)

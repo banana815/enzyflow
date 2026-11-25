@@ -1,3 +1,8 @@
 numpy>=2,<3
 opencv-python-headless>=4.10,<5
 pygrabber==0.2; sys_platform == "win32"
+pyobjc-framework-AVFoundation>=10,<13; sys_platform == "darwin"
+pyobjc-framework-libdispatch>=10,<13; sys_platform == "darwin"
+pyobjc-framework-Quartz>=10,<13; sys_platform == "darwin"
+pyusb>=1.2,<2; sys_platform == "darwin"
+libusb-package>=1.0.26,<2; sys_platform == "darwin"

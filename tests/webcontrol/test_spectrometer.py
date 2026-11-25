@@ -27,12 +27,53 @@ class IdentityTests(unittest.TestCase):
             with self.assertRaises(ValueError):select_camera([d],identity(d))
 
     def test_renumber_uses_identity_and_ambiguity_fails(self):
-        driver = 'directshow' if windows_camera else 'uvcvideo'
+        driver = 'directshow' if windows_camera else 'avfoundation' if sys.platform == 'darwin' else 'uvcvideo'
         original = device(driver=driver)
         renamed = device('/dev/video6', driver=driver)
         self.assertEqual(select_camera([renamed],identity(original)).path,'/dev/video6')
         for devices in ([original,renamed],[device(driver=driver,by_id='different')],[]):
             with self.assertRaises(ValueError):select_camera(devices,identity(original))
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'AVFoundation is macOS-only')
+    def test_macos_scan_uses_usb_metadata_and_stable_device_id(self):
+        from webcontrol import macos_camera
+
+        def camera(name, model, uid):
+            return SimpleNamespace(localizedName=lambda: name, modelID=lambda: model, uniqueID=lambda: uid)
+
+        attached = [
+            camera('USB-ZH', 'MacBook Air Camera', 'built-in'),
+            camera('USB-ZH', 'UVC Camera VendorID_123 ProductID_456', 'other-usb'),
+            camera('USB-ZH', 'UVC Camera VendorID_3176 ProductID_25700', 'spectrometer'),
+        ]
+        with tempfile.TemporaryDirectory() as data_dir, patch.object(
+                macos_camera.av, 'AVCaptureDevice',
+                SimpleNamespace(devicesWithMediaType_=lambda _: attached)):
+            devices = Spectrometer(data_dir=data_dir).devices()
+        self.assertEqual([(d['by_id'], d['vid_pid'], d['eligible']) for d in devices],
+                         [('other-usb', '007b:01c8', False), ('spectrometer', '0c68:6464', True)])
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'AVFoundation is macOS-only')
+    def test_macos_video_callback_converts_bgra_to_bgr(self):
+        from queue import Queue
+        from webcontrol import macos_camera
+        q = macos_camera.Quartz
+        status, pixel = q.CVPixelBufferCreate(None, 2, 2, q.kCVPixelFormatType_32BGRA, None, None)
+        self.assertEqual(status, 0)
+        self.assertEqual(q.CVPixelBufferLockBaseAddress(pixel, 0), 0)
+        try:
+            stride = q.CVPixelBufferGetBytesPerRow(pixel)
+            data = q.CVPixelBufferGetBaseAddress(pixel).as_buffer(stride * 2)
+            data[:8] = bytes((10, 20, 30, 255, 40, 50, 60, 255))
+            data[stride:stride + 8] = bytes((70, 80, 90, 255, 100, 110, 120, 255))
+        finally:
+            q.CVPixelBufferUnlockBaseAddress(pixel, 0)
+        delegate = macos_camera.EnzyflowFrameDelegate.alloc().init()
+        delegate.frames = Queue()
+        with patch.object(macos_camera.CoreMedia, 'CMSampleBufferGetImageBuffer', return_value=pixel):
+            delegate.captureOutput_didOutputSampleBuffer_fromConnection_(None, None, None)
+        self.assertEqual(delegate.frames.get_nowait().tolist(),
+                         [[[10, 20, 30], [40, 50, 60]], [[70, 80, 90], [100, 110, 120]]])
 
 
 class CameraWorkerTests(unittest.TestCase):
@@ -154,13 +195,18 @@ class CameraWorkerTests(unittest.TestCase):
         fake=FakeCamera()
         self.service.demo=False
         with ExitStack() as stack:
+            backend = windows_camera or camera
             if windows_camera:
                 d=DeviceInfo(path='test-camera',name='USB-ZH',vid_pid='0c68:6464',driver='directshow',by_id='test-camera')
                 stack.enter_context(patch.object(windows_camera,'lock_camera',return_value=Mock()))
+            elif sys.platform == 'darwin':
+                d=DeviceInfo(path='test-camera',name='USB-ZH',vid_pid='0c68:6464',driver='avfoundation',by_id='test-camera')
+                backend = Mock()
+                stack.enter_context(patch('webcontrol.spectrometer.macos_backend', return_value=backend))
+                stack.enter_context(patch('webcontrol.spectrometer.fcntl.flock'))
             else:
                 d=DeviceInfo(path='/dev/video2',name='USB-ZH',vid_pid='0c68:6464',driver='uvcvideo')
                 stack.enter_context(patch('webcontrol.spectrometer.fcntl.flock'))
-            backend=windows_camera or camera
             stack.enter_context(patch.object(backend,'enumerate_devices',return_value=[d]))
             stack.enter_context(patch.object(backend,'CameraSource',return_value=fake))
             self.service.command({'op':'connect','device':identity(d)})

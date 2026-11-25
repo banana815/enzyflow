@@ -31,6 +31,15 @@ def validate_service(current, service, demo):
         raise RuntimeError('电机网页服务仍在运行旧版进程。请停止旧进程后重新运行 ./start-control.sh。')
 
 
+def open_browser(url):
+    opener = 'open' if sys.platform == 'darwin' else 'xdg-open'
+    try:
+        subprocess.Popen([opener, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    except OSError:
+        print('无法自动打开浏览器，请手动访问 '+url, file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(description='打开 Enzyflow 本机控制台')
     parser.add_argument('--demo', action='store_true')
@@ -80,9 +89,7 @@ def main():
                 raise RuntimeError('控制服务未就绪，请查看启动日志。')
     print('Enzyflow '+label+'：'+url, flush=True)
     if not args.no_browser:
-        opener = 'open' if args.service == 'motor' and sys.platform == 'darwin' else 'xdg-open'
-        subprocess.Popen([opener, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True)
+        open_browser(url)
 
 
 if __name__ == '__main__':
