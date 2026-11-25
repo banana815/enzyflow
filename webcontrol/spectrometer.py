@@ -129,7 +129,7 @@ class Spectrometer:
                 self.stop_event.clear()
                 self.commands = queue.Queue(maxsize=16)
                 self.preview = None
-                self.state.update(status='connecting', connected=False, record=None, frame_time=None, recording=False, roi_selection=None, profile=None, lamp=None, saved_lamp=None, wavelength_calibration=None, halogen=None, halogen_capture=None, calibration_report=None, dark={'status':'none','message':'正在检查已保存的校准'}, error=None, files={}, message='正在核对光谱仪身份')
+                self.state.update(status='connecting', connected=False, record=None, frame_time=None, recording=False, roi_selection=None, profile=None, lamp=None, saved_lamp=None, wavelength_calibration=None, halogen=None, halogen_capture=None, capillary_capture=None, calibration_report=None, dark={'status':'none','message':'正在检查已保存的校准'}, error=None, files={}, message='正在核对光谱仪身份')
                 self.thread = threading.Thread(target=self._run, args=(body.get('device'), body.get('guided') is True, capture_mode), daemon=True, name='uvc-spectrometer')
                 self.thread.start()
         elif op == 'disconnect':
@@ -139,7 +139,8 @@ class Spectrometer:
                     self.state.update(status='stopping', message='正在释放光谱仪')
         elif op in {'roi', 'auto_roi', 'processing', 'zero', 'clear_zero', 'exposure', 'calibrate', 'clear_calibration', 'save', 'absorbance_save', 'saturation_settings', 'record_start', 'record_stop', 'dark_start', 'dark_clear', 'dark_save', 'dark_reset',
                     'history_load', 'history_roi', 'history_peaks', 'roi_save', 'roi_reset',
-                    'peaks_save', 'peaks_reset', 'exposure_auto', 'lamp_capture', 'lamp_calibrate', 'profile_restore', 'halogen_capture'}:
+                    'peaks_save', 'peaks_reset', 'exposure_auto', 'lamp_capture', 'lamp_calibrate', 'profile_restore', 'halogen_capture',
+                    'capillary_begin', 'capillary_ping', 'capillary_collect', 'capillary_end'}:
             with self.lock:
                 if (not self.state['connected'] or self.stop_event.is_set() or
                     time.monotonic()-self.state.get('frame_time',0)>3):
@@ -208,6 +209,10 @@ class Spectrometer:
                 exposure['default'] = max(exposure['min'], min(exposure['max'], limits.get('default', 300)))
                 exposure.update(value=source.get_exposure(), auto=controls.get('auto_exposure', {}).get('value') == 3)
             binding = {k: device_info.get(k) for k in ('vid_pid', 'by_id', 'name', 'width', 'height')}
+            from .calibration_history import CalibrationHistory, encode_dark, decode_dark
+            archive_dir = (ROOT / 'spectrometer/calibration-history' / calibration_dir.relative_to(self.data_dir)
+                           if self.data_dir == DATA else None)
+            history = CalibrationHistory(calibration_dir, binding, self.demo, archive_dir=archive_dir)
             cal_path = calibration_dir / ('demo-calibration.json' if self.demo else 'calibration.json')
             if cal_path.exists():
                 saved = json.loads(cal_path.read_text(encoding='utf-8'))
@@ -217,9 +222,10 @@ class Spectrometer:
                     self._update(calibration_report=saved.get('report'), wavelength_calibration={'saved':True,'path':str(cal_path),'id':cal.calibration_id}, saved_lamp=saved_lamp)
             halogen_path = calibration_dir / ('demo-halogen-reference.json' if self.demo else 'halogen-reference.json')
             standalone_halogen = None
-            if halogen_path.exists():
+            halogen_source = history.source_path(halogen_path)
+            if halogen_source.exists():
                 try:
-                    candidate = json.loads(halogen_path.read_text(encoding='utf-8'))
+                    candidate = json.loads(halogen_source.read_text(encoding='utf-8'))
                     if candidate['schema']==1 and candidate['binding']==binding:
                         standalone_halogen = candidate
                 except (ValueError, KeyError, TypeError):
@@ -245,8 +251,6 @@ class Spectrometer:
             profile_path = calibration_dir / ('demo-instrument-profile.json' if self.demo else 'instrument-profile.json')
             profile = {'schema':1,'binding':binding,'settings':None,'dark':None}
             initial_save = not guided and not profile_path.exists()
-            from .calibration_history import CalibrationHistory, encode_dark, decode_dark
-            history = CalibrationHistory(calibration_dir, binding, self.demo)
             history_key = None
             working_dark = None
             dark_pending = False
@@ -423,7 +427,11 @@ class Spectrometer:
             preview_at = 0.0
             photometry = None
             halogen_job = frame_reference = None
+            scan_id, scan_until = None, 0.0
             while not self.stop_event.is_set():
+                if scan_id is not None and time.monotonic() >= scan_until:
+                    scan_id = halogen_job = None
+                    self._update(capillary_capture=None, message='毛细管联动已停止')
                 completed_dark = None
                 auto_message = None
                 # Apply settings in the camera's owning thread only.
@@ -434,19 +442,38 @@ class Spectrometer:
                 if command:
                     try:
                         op = command['op']
-                        if halogen_job is not None:
+                        if scan_id is not None and op not in ('capillary_ping','capillary_collect','capillary_end'):
+                            raise ValueError('毛细管联动正在使用光谱仪')
+                        if halogen_job is not None and op not in ('capillary_ping','capillary_end'):
                             raise ValueError('正在采集空白 I₀，请等待采集完成')
                         if not roi_ready or roi_finder is not None:
-                            if op in ('lamp_capture','lamp_calibrate','peaks_save','halogen_capture','save','absorbance_save'):
+                            if op in ('lamp_capture','lamp_calibrate','peaks_save','halogen_capture','save','absorbance_save','capillary_begin','capillary_collect'):
                                 raise ValueError('请先选择采样范围，再采集灯谱或参考')
                         if recording_path is not None and op in {
                             'exposure_auto','exposure','dark_reset','history_load','history_roi',
-                            'history_peaks','roi_reset','peaks_reset','peaks_save','halogen_capture'
+                            'history_peaks','roi_reset','peaks_reset','peaks_save','halogen_capture','capillary_begin'
                         }:
                             raise ValueError('请先结束连续记录')
                         if dark_job is not None and op not in ('dark_clear','dark_reset','record_stop'):
                             raise ValueError('正在采集暗场，请保持遮光；完成或取消后再操作')
-                        if op == 'saturation_settings':
+                        if op == 'capillary_begin':
+                            requested = command.get('scan_id')
+                            if not isinstance(requested,str) or not re.fullmatch(r'[0-9a-f]{32}',requested):
+                                raise ValueError('无效的毛细管扫描标识')
+                            if (dark_controls is None or result.dark_profile is None
+                                or processor.zero_active or hardware_controls() != dark_controls):
+                                raise ValueError('联动扫描前请确认手动曝光与暗场匹配，并清除零参考')
+                            scan_id, scan_until = requested, time.monotonic()+10
+                            self._update(capillary_capture={'scan_id':scan_id,'status':'idle'},error=None)
+                        elif op in ('capillary_ping','capillary_end'):
+                            if scan_id is None or command.get('scan_id') != scan_id:
+                                raise ValueError('毛细管扫描会话已结束')
+                            if op == 'capillary_end':
+                                scan_id = halogen_job = None
+                                self._update(capillary_capture=None, message='毛细管联动已停止')
+                            else:
+                                scan_until = time.monotonic()+10
+                        elif op == 'saturation_settings':
                             self.saturation_policy = saturation.save(self.saturation_path, command)
                             self._update(saturation=dict(self.saturation_policy))
                         elif op == 'dark_start':
@@ -613,8 +640,16 @@ class Spectrometer:
                             if command.get('draft') is not True:
                                 persist_profile()
                             activate_saved_dark()
-                        elif op == 'halogen_capture':
-                            if command.get('confirmed') is not True:
+                        elif op in ('halogen_capture','capillary_collect'):
+                            capillary_point = None
+                            if op == 'capillary_collect':
+                                position, kind = command.get('position_mm'), command.get('kind')
+                                if (scan_id is None or command.get('scan_id') != scan_id
+                                    or type(position) is not int or not 0 <= position <= 320
+                                    or kind not in ('blank','sample')):
+                                    raise ValueError('无效的毛细管扫描会话或采样位置')
+                                capillary_point = {'scan_id':scan_id,'position_mm':position,'kind':kind}
+                            elif command.get('confirmed') is not True:
                                 raise ValueError('请确认当前为空白光路、无样品的卤素灯参考')
                             current_settings = settings_now()
                             if current_settings['controls'].get('auto_exposure') != 1:
@@ -626,7 +661,7 @@ class Spectrometer:
                             # Saving I₀ only depends on applied settings. Use an
                             # existing archive when it describes this exact setup.
                             saved = None
-                            if history_key is not None:
+                            if history_key is not None and capillary_point is None:
                                 try:
                                     saved = history.read(history_key)
                                 except (OSError, ValueError, KeyError, TypeError):
@@ -640,8 +675,12 @@ class Spectrometer:
                             sampler = spectrum.SpectrumProcessor(config.ProcessingConfig(**current_settings['processing']))
                             sampler.set_dark_reference(result.dark_profile,result.dark_metadata,region.x)
                             halogen_job = dict(sampler=sampler, settings=current_settings, attach=attach_to_history,
-                                               count=0, max_ratio=0., raw_max=0)
-                            self._update(halogen_capture={'status':'collecting','count':0,'total':BLANK_FRAMES})
+                                               count=0, max_ratio=0., raw_max=0, capillary=capillary_point)
+                            progress = {'status':'collecting','count':0,'total':BLANK_FRAMES}
+                            if capillary_point is None:
+                                self._update(halogen_capture=progress)
+                            else:
+                                self._update(capillary_capture={**capillary_point,**progress})
                         elif op == 'lamp_capture':
                             if command.get('confirmed') is not True:
                                 raise ValueError('请确认当前入光来自皓宇荧光灯')
@@ -748,11 +787,14 @@ class Spectrometer:
                                 self.exports.update({Path(v).name:Path(v) for v in files.values()})
                                 self.state['files'].update({k:'/api/spectrometer-file/'+Path(v).name for k,v in files.items()})
                             self.refresh_files()
-                        if op == 'exposure_auto' or op == 'halogen_capture' or op.startswith('history_'):
+                        if op in ('exposure_auto','halogen_capture','capillary_begin','capillary_ping','capillary_collect','capillary_end') or op.startswith('history_'):
                             self._update(error=None)
                         else:
                             self._update(error=None, message='已保存单幅吸光度曲线' if op=='absorbance_save' else '已保存采集文件' if op=='save' else '设置已应用')
                     except Exception as exc:
+                        if op == 'capillary_collect' and halogen_job is None and command.get('scan_id') == scan_id:
+                            self._update(capillary_capture={'scan_id':scan_id,'position_mm':command.get('position_mm'),
+                                         'status':'error','error':str(exc)})
                         if op == 'exposure_auto':
                             self._update(error=str(exc), message='自动曝光未完成')
                         else:
@@ -870,12 +912,13 @@ class Spectrometer:
                 saturation.annotate(record, pixels, self.saturation_policy)
                 if halogen_job is not None:
                     job = halogen_job
+                    capillary_point = job['capillary']
                     try:
                         if (job['settings']['controls'] != dark_controls or
                             (job['count']+1 == BLANK_FRAMES and hardware_controls() != dark_controls)):
                             raise ValueError('采集空白 I₀ 时相机设置发生变化，请恢复匹配的暗场后重试')
                         if saturation.blocked(record):
-                            raise ValueError('空白 I₀ 采集中达到饱和阈值，未保存本次参考')
+                            raise ValueError('采集过程中达到饱和阈值，未保存本点光谱')
                         blank = job['sampler'].update(pixels,region.x)
                         job['count'] = blank.buffer_len
                         job['max_ratio'] = max(job['max_ratio'],record['saturation']['ratio'])
@@ -887,22 +930,36 @@ class Spectrometer:
                             current['stats'].update(saturated=exceeded,saturated_ratio=job['max_ratio'])
                             current['saturation'] = dict(record['saturation'],exceeded=exceeded,
                                                          ratio=job['max_ratio'],raw_max=job['raw_max'])
-                            candidate = capture_blank(current,binding,job['settings'],True)
-                            if job['attach']:
-                                archive_stage('reference', reference=candidate)
-                                halogen = candidate
+                            if capillary_point is not None:
+                                data = {'record':current,'settings':job['settings'],'binding':binding}
+                                if capillary_point['kind']=='blank':
+                                    data = capture_blank(current,binding,job['settings'],True)
+                                self._update(capillary_capture={**capillary_point,'status':'done','count':BLANK_FRAMES,
+                                             'total':BLANK_FRAMES,'data':data},error=None)
                             else:
-                                write_profile(halogen_path,candidate)
-                                standalone_halogen = candidate
+                                candidate = capture_blank(current,binding,job['settings'],True)
+                                if job['attach']:
+                                    archive_stage('reference', reference=candidate)
+                                    halogen = candidate
+                                else:
+                                    write_profile(halogen_path,candidate)
+                                    standalone_halogen = candidate
+                                self.refresh_files()
+                                self._update(halogen_capture={'status':'ready','count':BLANK_FRAMES,'total':BLANK_FRAMES},
+                                             message=f'已保存 {BLANK_FRAMES} 帧平均空白 I₀',error=None)
                             halogen_job = None
-                            self.refresh_files()
-                            self._update(halogen_capture={'status':'ready','count':BLANK_FRAMES,'total':BLANK_FRAMES},
-                                         message=f'已保存 {BLANK_FRAMES} 帧平均空白 I₀',error=None)
                         else:
-                            self._update(halogen_capture={'status':'collecting','count':job['count'],'total':BLANK_FRAMES})
+                            progress = {'status':'collecting','count':job['count'],'total':BLANK_FRAMES}
+                            if capillary_point is None:
+                                self._update(halogen_capture=progress)
+                            else:
+                                self._update(capillary_capture={**capillary_point,**progress})
                     except Exception as exc:
                         halogen_job = None
-                        self._update(halogen_capture={'status':'error','message':str(exc)},error=str(exc))
+                        if capillary_point is None:
+                            self._update(halogen_capture={'status':'error','message':str(exc)},error=str(exc))
+                        else:
+                            self._update(capillary_capture={**capillary_point,'status':'error','error':str(exc)},error=str(exc))
                 applied = {'roi':record['roi'],'processing':vars(processing),'controls':dark_controls or {}}
                 frame_reference = halogen or standalone_halogen
                 if (standalone_halogen is not None and halogen is not None
@@ -955,6 +1012,7 @@ class Spectrometer:
                 self.state['connected'] = False
                 self.state['recording'] = False
                 self.state['halogen_capture'] = None
+                self.state['capillary_capture'] = None
                 self.state['lamp'] = None
                 self.state['dark'] = {'status':'none','message':'已断开；保存的校准保留，下次连接自动恢复'}
                 if self.state['status'] != 'error':

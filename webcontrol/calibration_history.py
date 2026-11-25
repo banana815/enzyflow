@@ -31,16 +31,23 @@ def decode_dark(dark, binding):
 
 
 class CalibrationHistory:
-    def __init__(self, data_dir, binding, demo=False):
+    def __init__(self, data_dir, binding, demo=False, archive_dir=None):
         self.binding = binding
-        self.directory = Path(data_dir) / ('demo-calibrations' if demo else 'calibrations')
+        data_dir = Path(data_dir)
+        self.directory = data_dir / ('demo-calibrations' if demo else 'calibrations')
+        self.archive_dir = Path(archive_dir) if archive_dir is not None and not demo else None
         prefix = 'demo-' if demo else ''
         self.legacy = {
-            'legacy': Path(data_dir) / (prefix + 'instrument-profile.json'),
-            'previous': Path(data_dir) / (prefix + 'instrument-profile.previous.json'),
+            'legacy': data_dir / (prefix + 'instrument-profile.json'),
+            'previous': data_dir / (prefix + 'instrument-profile.previous.json'),
         }
-        self.legacy_wave = Path(data_dir) / (prefix + 'calibration.json')
-        self.legacy_reference = Path(data_dir) / (prefix + 'halogen-reference.json')
+        self.legacy_wave = data_dir / (prefix + 'calibration.json')
+        self.legacy_reference = data_dir / (prefix + 'halogen-reference.json')
+
+    def source_path(self, path):
+        if self.archive_dir is not None and not path.exists():
+            return self.archive_dir / path.relative_to(self.directory.parent)
+        return path
 
     def read(self, key):
         if not isinstance(key, str):
@@ -51,7 +58,7 @@ class CalibrationHistory:
             path = self.directory / (key + '.json')
         else:
             raise ValueError('无效的校正记录名称')
-        data = read_profile(path, self.binding)
+        data = read_profile(self.source_path(path), self.binding)
         if data is None:
             raise ValueError('找不到所选校正记录')
         if key in self.legacy:
@@ -63,7 +70,7 @@ class CalibrationHistory:
 
     def _legacy_read(self, path):
         try:
-            data = json.loads(path.read_text(encoding='utf-8'))
+            data = json.loads(self.source_path(path).read_text(encoding='utf-8'))
             if data.get('binding') == self.binding:
                 return data
         except (OSError, ValueError, AttributeError):
@@ -72,8 +79,10 @@ class CalibrationHistory:
 
     def scan(self):
         entries = []
-        paths = sorted(self.directory.glob('cal-*.json'), reverse=True)
-        for key in [*(p.stem for p in paths), *self.legacy]:
+        keys = {path.stem for path in self.directory.glob('cal-*.json')}
+        if self.archive_dir is not None:
+            keys.update(path.stem for path in (self.archive_dir / self.directory.name).glob('cal-*.json'))
+        for key in [*sorted(keys, reverse=True), *self.legacy]:
             try:
                 data = self.read(key)
             except (OSError, ValueError, KeyError, TypeError, OverflowError):
