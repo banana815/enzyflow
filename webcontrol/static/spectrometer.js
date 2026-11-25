@@ -455,14 +455,14 @@
       isRecording=!!s.recording;
       const dark=s.dark || {status:'none',message:'当前服务尚未加载暗场功能'};
       const blankCapture=s.halogen_capture;
-      halogenCollecting=blankCapture?.status==='collecting';
+      halogenCollecting=blankCapture?.status==='collecting' || !!s.capillary_capture;
       const blankProgress=$('sp-halogen-progress');
-      blankProgress.hidden=!halogenCollecting;
+      blankProgress.hidden=blankCapture?.status!=='collecting';
       blankProgress.max=blankCapture?.total || 32;
       blankProgress.value=blankCapture?.count || 0;
       const halogenStatus = (s.halogen?.saved?`空白 I₀ 已保存${s.halogen.frames?'（平均 '+s.halogen.frames+' 帧）':''}。`:'')+(s.halogen?.message || '尚未保存空白卤素灯参考 I₀');
-      $('sp-halogen-state').textContent = halogenCollecting
-        ? `正在采集空白 I₀ · ${blankCapture.count} / ${blankCapture.total} 帧`
+      $('sp-halogen-state').textContent = s.capillary_capture ? '毛细管逐点采集中。'
+        : blankCapture?.status==='collecting' ? `正在采集空白 I₀ · ${blankCapture.count} / ${blankCapture.total} 帧`
         : blankCapture?.status==='error' ? blankCapture.message
         : connected && (!roiReady || roiScanning) ? '请先确定采样范围。'
         : connected && !r?.stats.dark_corrected

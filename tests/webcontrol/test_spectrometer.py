@@ -351,6 +351,44 @@ class CameraWorkerTests(unittest.TestCase):
             self.assertEqual(s['halogen']['id'],ref)
             self.assertTrue(s['record']['photometry']['active'])
 
+    def test_capillary_capture_collects_averaged_blank_and_sample_on_the_spectrometer(self):
+        import numpy as np
+        from spectrometer.spectro.camera import SyntheticSource
+        from webcontrol.halogen_reference import compare
+
+        level = [10]
+        scan_id = "b" * 32
+        def frame(source):
+            return np.full((720, 1280, 3), level[0], dtype=np.uint8)
+
+        with patch.object(SyntheticSource, "read", frame):
+            self.start()
+            self.apply({"op": "dark_start", "frames": 8, "confirmed": True},
+                       lambda s: s["dark"]["status"] == "collecting")
+            self.wait(lambda s: s["dark"]["status"] == "ready")
+            self.apply({"op": "capillary_begin", "scan_id": scan_id},
+                       lambda s: (s.get("capillary_capture") or {}).get("status") == "idle")
+
+            def collect(kind, intensity):
+                level[0] = intensity
+                state = self.apply({"op": "capillary_collect", "scan_id": scan_id,
+                                    "position_mm": 50, "kind": kind},
+                                   lambda s: s["capillary_capture"]["status"] == "done"
+                                   and s["capillary_capture"]["kind"] == kind)
+                capture = state["capillary_capture"]
+                self.assertEqual(capture["position_mm"], 50)
+                self.assertEqual(capture["count"], 32)
+                return capture["data"]
+
+            blank = collect("blank", 110)
+            sample = collect("sample", 60)
+            ratio = compare(blank, sample["record"], sample["binding"], sample["settings"])
+            self.assertTrue(ratio["active"])
+            self.assertAlmostEqual(ratio["transmittance"][0], 0.5)
+            self.apply({"op": "capillary_end", "scan_id": scan_id},
+                       lambda s: s["capillary_capture"] is None)
+            self.assertFalse((Path(self.tmp.name) / "demo-halogen-reference.json").exists())
+
     def test_blank_uses_loaded_dark_with_unsaved_range(self):
         import numpy as np
         from spectrometer.spectro.camera import SyntheticSource

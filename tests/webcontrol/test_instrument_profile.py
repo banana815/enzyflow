@@ -6,6 +6,7 @@ import unittest
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
 from webcontrol.instrument_profile import read_profile,write_profile,dark_matches,restore_controls
+from webcontrol.calibration_history import CalibrationHistory
 from spectrometer.spectro.config import ProcessingConfig
 
 class ProfileTests(unittest.TestCase):
@@ -33,6 +34,28 @@ class ProfileTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 path=Path(tmp)/'profile.json';path.write_text(json.dumps(bad))
                 with self.assertRaises(ValueError):read_profile(path,self.binding)
+
+    def test_shared_history_can_be_loaded_without_runtime_and_edits_stay_local(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shared = root / "shared"
+            runtime = root / "runtime"
+            saved = CalibrationHistory(shared, self.binding)
+            key, filename = saved.save(self.data)
+            write_profile(shared / "instrument-profile.json", self.data)
+
+            history = CalibrationHistory(runtime, self.binding, archive_dir=shared)
+            self.assertEqual([entry["id"] for entry in history.scan()], [key, "legacy"])
+            self.assertEqual(history.read(key), self.data)
+            self.assertFalse(runtime.exists())
+
+            updated = dict(self.data, dark=None)
+            history.save(updated, key)
+            self.assertTrue((runtime / "calibrations" / filename).is_file())
+            self.assertEqual(history.read(key), updated)
+            self.assertEqual(saved.read(key), self.data)
+            wrong_device = CalibrationHistory(runtime, dict(self.binding, by_id="other"), archive_dir=shared)
+            self.assertEqual(wrong_device.scan(), [])
     def test_display_changes_preserve_dark_exposure_roi_gain_do_not(self):
         s=self.settings
         p=dict(s['processing'],buffer_size=32,savgol_enabled=False,hold_peaks=True)
